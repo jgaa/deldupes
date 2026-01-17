@@ -27,9 +27,10 @@ pub fn run_scan(
     follow_symlinks: bool,
     recursive: bool,
 ) -> Result<()> {
+    const RESULT_QUEUE_PER_THREAD: usize = 8192;
+    let (res_tx, res_rx) = chan::bounded::<HashResult>(threads * RESULT_QUEUE_PER_THREAD);
     let (job_tx, job_rx) = chan::bounded::<HashJob>(threads * 256);
-    let (res_tx, res_rx) = chan::bounded::<HashResult>(threads * 256);
-
+    
     // Writer thread owns the DB handle and will drop it (and unlock) when done.
     let writer_handle = thread::spawn(move || writer_loop(db, res_rx));
 
@@ -49,41 +50,68 @@ pub fn run_scan(
     walk_and_enqueue(roots, follow_symlinks, recursive, &job_tx)?;
     drop(job_tx); // close channel so workers exit when queue is drained
 
+    tracing::debug!("all jobs enqueued, waiting for workers");
+
     // Wait for workers to finish
     for h in workers {
         let _ = h.join();
     }
+
+    tracing::debug!("all workers finished, waiting for writer");
 
     // Now res_tx clones in workers are dropped, so res_rx will close and writer ends.
     let writer_result = writer_handle
         .join()
         .map_err(|_| anyhow::anyhow!("writer thread panicked"))??;
 
+    tracing::info!("scan complete");
+
     Ok(writer_result)
 }
 
+
 fn writer_loop(db: DbHandle, res_rx: chan::Receiver<HashResult>) -> Result<()> {
+    const BATCH_SIZE: usize = 10_000;
+
     let mut indexed: u64 = 0;
+    let mut batch: Vec<(String, Vec<u8>, String)> = Vec::with_capacity(BATCH_SIZE);
 
     while let Ok(r) = res_rx.recv() {
+        // Prepare DB item
         let blob = r.meta.encode();
+        batch.push((r.path, blob, r.sha256_hex));
 
-        db.upsert_file_and_index_sha256(&r.path, &blob, &r.sha256_hex)
-            .with_context(|| format!("db upsert failed for {}", r.path))?;
+        if batch.len() >= BATCH_SIZE {
+            db.write_batch_sha256_index(&batch)?;
+            indexed += batch.len() as u64;
+            batch.clear();
 
-        indexed += 1;
-        if indexed % 10_000 == 0 {
             tracing::info!(indexed, "scan progress");
         }
+    }
+
+    // Flush remaining
+    if !batch.is_empty() {
+        db.write_batch_sha256_index(&batch)?;
+        indexed += batch.len() as u64;
+        batch.clear();
     }
 
     tracing::info!(indexed, "scan finished");
     Ok(())
 }
 
+
+use std::time::{Duration, Instant};
+
 fn worker_loop(rx: chan::Receiver<HashJob>, tx: chan::Sender<HashResult>) {
+    let mut job_count: u64 = 0;
+    let mut bytes_processed: u64 = 0;
+    let mut last_job_duration: Option<Duration> = None;
+
     while let Ok(job) = rx.recv() {
         let path = job.path;
+        let t0 = Instant::now();
 
         let r: Result<HashResult> = (|| {
             let md = std::fs::metadata(&path)
@@ -109,13 +137,40 @@ fn worker_loop(rx: chan::Receiver<HashJob>, tx: chan::Sender<HashResult>) {
             })
         })();
 
+        let dt = t0.elapsed();
+        last_job_duration = Some(dt);
+
         if let Ok(r) = r {
+            job_count += 1;
+            bytes_processed += r.meta.size;
+
             if tx.send(r).is_err() {
                 break;
             }
         }
     }
+
+    let gb_processed = bytes_processed as f64 / (1024.0 * 1024.0 * 1024.0);
+
+    match last_job_duration {
+        Some(dur) => {
+            tracing::debug!(
+                jobs = job_count,
+                gb = format!("{:.4}", gb_processed),
+                last_job_ms = dur.as_millis(),
+                "worker exiting"
+            );
+        }
+        None => {
+            tracing::debug!(
+                jobs = job_count,
+                gb = format!("{:.4}", gb_processed),
+                "worker exiting (no jobs processed)"
+            );
+        }
+    }
 }
+
 
 fn walk_and_enqueue(
     roots: Vec<PathBuf>,

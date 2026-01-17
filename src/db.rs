@@ -192,6 +192,60 @@ impl DbHandle {
         tx.commit().context("commit() failed")?;
         Ok(path_id)
     }
+
+    pub fn write_batch_sha256_index(
+        &self,
+        batch: &[(String, Vec<u8>, String)], // (path, file_meta_blob, sha256_hex)
+    ) -> anyhow::Result<()> {
+        use crate::codec::{u64_list_pack, u64_list_unpack};
+    
+        let tx = self.db.begin_write().context("begin_write() failed")?;
+    
+        {
+            let mut path_to_id = tx.open_table(crate::schema::PATH_TO_ID)?;
+            let mut id_to_path = tx.open_table(crate::schema::ID_TO_PATH)?;
+            let mut kv = tx.open_table(crate::schema::KV_U64)?;
+            let mut fm = tx.open_table(crate::schema::FILE_META)?;
+            let mut idx = tx.open_table(crate::schema::SHA256_TO_PATHS)?;
+    
+            for (path, meta_blob, sha256_hex) in batch {
+                // get-or-create path_id
+                let pid = if let Some(v) = path_to_id.get(path.as_str())? {
+                    v.value()
+                } else {
+                    let next_id = match kv.get(crate::schema::KEY_NEXT_PATH_ID)? {
+                        Some(v) => v.value(),
+                        None => 1,
+                    };
+                    let new_id = next_id;
+                    kv.insert(crate::schema::KEY_NEXT_PATH_ID, next_id + 1)?;
+                    path_to_id.insert(path.as_str(), new_id)?;
+                    id_to_path.insert(new_id, path.as_str())?;
+                    new_id
+                };
+    
+                // store file_meta
+                fm.insert(pid, meta_blob.as_slice())?;
+    
+                // update sha256 -> [path_id] list (sorted unique)
+                let mut ids = match idx.get(sha256_hex.as_str())? {
+                    Some(v) => u64_list_unpack(v.value()),
+                    None => Vec::new(),
+                };
+    
+                if ids.binary_search(&pid).is_err() {
+                    ids.push(pid);
+                    ids.sort_unstable();
+                    let packed = u64_list_pack(&ids);
+                    idx.insert(sha256_hex.as_str(), packed.as_slice())?;
+                }
+            }
+        } // tables dropped here
+    
+        tx.commit().context("commit() failed")?;
+        Ok(())
+    }
+    
     
 }
 

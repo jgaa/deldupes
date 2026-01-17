@@ -2,6 +2,7 @@ use crate::codec::systemtime_to_unix_secs;
 use crate::db::DbHandle;
 use crate::file_meta::FileMeta;
 use crate::hashing;
+use crate::path_utils;
 use anyhow::{Context, Result};
 use crossbeam_channel as chan;
 use std::collections::HashSet;
@@ -192,19 +193,17 @@ fn walk_and_enqueue(
                     Ok(e) => e,
                     Err(_) => continue, // later: report
                 };
+
+                // WalkDir already knows the file type, but we still want the central logic.
                 if entry.file_type().is_file() {
-                    let _ = job_tx.send(HashJob { path: entry.into_path() });
+                    let _ = enqueue_if_candidate(entry.into_path(), job_tx);
                 }
             }
         } else {
             if let Ok(rd) = std::fs::read_dir(&root) {
                 for e in rd.flatten() {
                     let p = e.path();
-                    if let Ok(md) = std::fs::metadata(&p) {
-                        if md.is_file() {
-                            let _ = job_tx.send(HashJob { path: p });
-                        }
-                    }
+                    let _ = enqueue_if_candidate(p, job_tx);
                 }
             }
         }
@@ -212,6 +211,37 @@ fn walk_and_enqueue(
 
     Ok(())
 }
+
+/// Enqueue a path if it is a file we want to process.
+/// Rules (v0):
+/// - must be a regular file
+/// - must be non-empty
+fn enqueue_if_candidate(path: PathBuf, job_tx: &chan::Sender<HashJob>) -> Result<()> {
+    // Cheap checks first (no normalization work if we won't enqueue)
+    let md = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(_) => return Ok(()), // skip unreadable
+    };
+
+    if !md.is_file() {
+        return Ok(());
+    }
+
+    if md.len() == 0 {
+        return Ok(()); // skip empty files
+    }
+
+    // Now normalize (absolute + lexical cleanup)
+    let path = match path_utils::normalize_path(&path) {
+        Ok(p) => p,
+        Err(_) => return Ok(()), // skip if we can't normalize
+    };
+
+    // Send job (ignore failure if receiver gone)
+    let _ = job_tx.send(HashJob { path });
+    Ok(())
+}
+
 
 fn filter_dir_entry(e: &walkdir::DirEntry, visited_dirs: &mut HashSet<(u64, u64)>) -> bool {
     if e.file_type().is_dir() {

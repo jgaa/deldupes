@@ -198,6 +198,8 @@ impl DbHandle {
         batch: &[(String, Vec<u8>, String)], // (path, file_meta_blob, sha256_hex)
     ) -> anyhow::Result<()> {
         use crate::codec::{u64_list_pack, u64_list_unpack};
+
+        tracing::trace!(batch_size = batch.len(), "Writing batch to DB");
     
         let tx = self.db.begin_write().context("begin_write() failed")?;
     

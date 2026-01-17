@@ -10,6 +10,10 @@ mod hashing;
 mod logging;
 mod scan;
 mod schema;
+mod dupes;
+mod potential;
+mod path_filter;
+mod path_utils;
 
 #[derive(Parser, Debug)]
 #[command(name = "deldupes")]
@@ -49,6 +53,16 @@ enum Command {
         #[arg(long, default_value_t = false)]
         no_recursive: bool,
     },
+
+    /// List duplicate files (by SHA-256)
+    Dupes {
+        /// Optional path prefixes to filter groups
+        paths: Vec<PathBuf>,
+    },
+
+    /// List potential duplicates (same SHA-1 of first 4 KiB, size > 4 KiB)
+    Potential,
+
 
     /// Print basic DB info (temporary helper command)
     DbInfo,
@@ -110,6 +124,29 @@ fn run() -> Result<()> {
             Ok(())
         }
 
+        Command::Dupes { paths } => {
+            let dbh = db::open(&db_dir)
+                .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
+        
+            let groups = dupes::load_groups(&dbh)?;
+            let filter = path_filter::PathFilter::new(&paths);
+            let groups = dupes::filter_groups(groups, &filter);
+        
+            dupes::print_groups(&groups);
+            Ok(())
+        }
+        
+
+        Command::Potential => {
+            let dbh = db::open(&db_dir)
+                .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
+        
+            let groups = potential::load_groups(&dbh)?;
+            potential::print_groups(&groups);
+            Ok(())
+        }
+        
+        
         Command::DbInfo => {
             let dbh = db::open(&db_dir)
                 .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;

@@ -1,0 +1,48 @@
+[package]
+name = "deldupes"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Fast duplicate file detection and safe removal"
+repository = "https://github.com/jgaa/deldupes"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[dependencies]
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging / diagnostics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Filesystem traversal
+walkdir = "2.5"
+
+# Concurrency
+crossbeam-channel = "0.5"
+crossbeam-utils = "0.8"
+
+# Hashing
+sha2 = "0.10"
+sha1 = "0.10"
+digest = "0.10"
+hex = "0.4"
+
+# Embedded database
+redb = "2.1"
+
+# Progress bars
+indicatif = "0.17"
+
+# Platform-specific directories
+directories = "5.0"
+
+fs2 = "0.4"

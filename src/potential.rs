@@ -3,12 +3,14 @@ use crate::file_meta::FileMeta;
 use anyhow::{Context, Result};
 use redb::ReadableTable;
 use std::collections::HashMap;
+use crate::path_filter::PathFilter;
+use crate::file_meta::FileState;
 
 #[derive(Debug, Clone)]
-struct Entry {
-    path: String,
-    size: u64,
-    sha256: [u8; 32],
+pub struct Entry {
+    pub path: String,
+    pub size: u64,
+    pub sha256: [u8; 32],
 }
 
 #[derive(Debug, Clone)]
@@ -21,33 +23,37 @@ pub struct PotentialGroup {
 pub fn load_groups(db: &DbHandle) -> Result<Vec<PotentialGroup>> {
     let tx = db.db.begin_read().context("begin_read() failed")?;
     let file_meta = tx.open_table(crate::schema::FILE_META)?;
+    let file_state = tx.open_table(crate::schema::FILE_STATE)?;
+    let file_to_path = tx.open_table(crate::schema::FILE_TO_PATH)?;
     let id_to_path = tx.open_table(crate::schema::ID_TO_PATH)?;
+
 
     let mut map: HashMap<[u8; 20], Vec<Entry>> = HashMap::new();
 
-    // Iterate all file_meta entries: key = path_id, value = blob
     for item in file_meta.iter()? {
         let (k, v) = item?;
-        let path_id = k.value();
+        let file_id = k.value();
         let blob = v.value();
 
+        let Some(st) = file_state.get(file_id)? else { continue; };
+        let Some(state) = FileState::from_u8(st.value()) else { continue };
+
+        if state != FileState::Live {
+            continue;
+        }
+
         let fm = FileMeta::decode(blob)
-            .with_context(|| format!("decode file_meta for path_id={}", path_id))?;
+        .with_context(|| format!("decode file_meta for file_id={}", file_id))?;
 
-        // Potential duplicates only meaningful when we have a prefix hash.
-        let Some(prefix) = fm.sha1prefix_4k else {
-            continue;
-        };
+        let Some(prefix) = fm.sha1prefix_4k else { continue; };
 
-        // Resolve full path
-        let Some(p) = id_to_path.get(path_id)? else {
-            continue;
-        };
+        let Some(pid) = file_to_path.get(file_id)? else { continue; };
+        let pid = pid.value();
 
+        let Some(p) = id_to_path.get(pid)? else { continue; };
         let path = p.value().to_string();
-        map.entry(prefix)
-            .or_default()
-            .push(Entry { path, size: fm.size, sha256: fm.sha256 });
+
+        map.entry(prefix).or_default().push(Entry { path, size: fm.size, sha256: fm.sha256 });
     }
 
     // Convert to groups and keep only groups with >= 2 entries
@@ -95,6 +101,7 @@ pub fn load_groups(db: &DbHandle) -> Result<Vec<PotentialGroup>> {
     Ok(groups)
 }
 
+
 pub fn print_groups(groups: &[PotentialGroup]) {
     for g in groups {
         // Largest file first (as requested)
@@ -108,6 +115,20 @@ pub fn print_groups(groups: &[PotentialGroup]) {
         println!();
     }
 }
+
+/// Keep only groups where at least one entry path matches the filter.
+/// If filter is empty => everything matches.
+pub fn filter_groups(groups: Vec<PotentialGroup>, filter: &PathFilter) -> Vec<PotentialGroup> {
+    if filter.is_empty() {
+        return groups;
+    }
+
+    groups
+    .into_iter()
+    .filter(|g| g.entries.iter().any(|e| filter.matches(&e.path)))
+    .collect()
+}
+
 
 // Simple human-readable size (binary units)
 fn format_size(bytes: u64) -> String {

@@ -20,9 +20,8 @@ pub fn u64_list_unpack(bytes: &[u8]) -> Vec<u64> {
     out
 }
 
-pub fn systemtime_to_unix_secs(t: SystemTime) -> i64 {
-    match t.duration_since(UNIX_EPOCH) {
-        Ok(d) => d.as_secs() as i64,
-        Err(e) => -(e.duration().as_secs() as i64),
-    }
+pub fn systemtime_to_unix_secs(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH)
+    .map(|d| d.as_secs())
+    .unwrap_or(0)
 }

@@ -5,6 +5,7 @@ use redb::{Database, ReadableTable};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use crate::file_meta::FileState;
 
 pub struct DbHandle {
     pub db_dir: PathBuf,
@@ -65,153 +66,94 @@ impl DbHandle {
             let _ = tx.open_table(crate::schema::ID_TO_PATH)?;
             let _ = tx.open_table(crate::schema::KV_U64)?;
             let _ = tx.open_table(crate::schema::FILE_META)?;
-            let _ = tx.open_table(crate::schema::SHA256_TO_PATHS)?;
-
+            let _ = tx.open_table(crate::schema::PATH_CURRENT)?;
+            let _ = tx.open_table(crate::schema::FILE_TO_PATH)?;
+            let _ = tx.open_table(crate::schema::FILE_STATE)?;
+            let _ = tx.open_table(crate::schema::SHA256_TO_FILES)?;
         }
         tx.commit().context("commit() failed")?;
         Ok(())
     }
 
-    pub fn get_or_create_path_id(&self, path: &str) -> anyhow::Result<u64> {
-        let tx = self.db.begin_write().context("begin_write() failed")?;
-    
-        // Put table borrows in a scope so they drop before commit.
-        let id: u64 = {
-            let mut path_to_id = tx.open_table(crate::schema::PATH_TO_ID)?;
-            let mut id_to_path = tx.open_table(crate::schema::ID_TO_PATH)?;
-            let mut kv = tx.open_table(crate::schema::KV_U64)?;
-    
-            // Fast path: already exists
-            if let Some(v) = path_to_id.get(path)? {
-                v.value()
-            } else {
-                // Allocate new id from KV_U64("next_path_id")
-                let next_id = match kv.get(crate::schema::KEY_NEXT_PATH_ID)? {
-                    Some(v) => v.value(),
-                    None => 1, // start at 1
-                };
-    
-                let new_id = next_id;
-                kv.insert(crate::schema::KEY_NEXT_PATH_ID, next_id + 1)?;
-    
-                // Insert both mappings
-                path_to_id.insert(path, new_id)?;
-                id_to_path.insert(new_id, path)?;
-    
-                new_id
-            }
-            // <-- tables dropped here (end of scope)
-        };
-    
-        tx.commit().context("commit() failed")?;
-        Ok(id)
-    }
-    
+//     pub fn get_or_create_path_id(&self, path: &str) -> anyhow::Result<u64> {
+//         let tx = self.db.begin_write().context("begin_write() failed")?;
+//
+//         // Put table borrows in a scope so they drop before commit.
+//         let id: u64 = {
+//             let mut path_to_id = tx.open_table(crate::schema::PATH_TO_ID)?;
+//             let mut id_to_path = tx.open_table(crate::schema::ID_TO_PATH)?;
+//             let mut kv = tx.open_table(crate::schema::KV_U64)?;
+//
+//             // Fast path: already exists
+//             if let Some(v) = path_to_id.get(path)? {
+//                 v.value()
+//             } else {
+//                 // Allocate new id from KV_U64("next_path_id")
+//                 let next_id = match kv.get(crate::schema::KEY_NEXT_PATH_ID)? {
+//                     Some(v) => v.value(),
+//                     None => 1, // start at 1
+//                 };
+//
+//                 let new_id = next_id;
+//                 kv.insert(crate::schema::KEY_NEXT_PATH_ID, next_id + 1)?;
+//
+//                 // Insert both mappings
+//                 path_to_id.insert(path, new_id)?;
+//                 id_to_path.insert(new_id, path)?;
+//
+//                 new_id
+//             }
+//             // <-- tables dropped here (end of scope)
+//         };
+//
+//         tx.commit().context("commit() failed")?;
+//         Ok(id)
+//     }
+//
+//
+//     pub fn get_path_by_id(&self, path_id: u64) -> anyhow::Result<Option<String>> {
+//         let tx = self.db.begin_read().context("begin_read() failed")?;
+//         let table = tx.open_table(crate::schema::ID_TO_PATH)?;
+//
+//         Ok(match table.get(path_id)? {
+//             Some(v) => Some(v.value().to_string()),
+//             None => None,
+//         })
+//     }
 
-    pub fn get_path_by_id(&self, path_id: u64) -> anyhow::Result<Option<String>> {
-        let tx = self.db.begin_read().context("begin_read() failed")?;
-        let table = tx.open_table(crate::schema::ID_TO_PATH)?;
+    // pub fn get_id_by_path(&self, path: &str) -> anyhow::Result<Option<u64>> {
+    //     let tx = self.db.begin_read().context("begin_read() failed")?;
+    //     let table = tx.open_table(crate::schema::PATH_TO_ID)?;
+    //
+    //     Ok(match table.get(path)? {
+    //         Some(v) => Some(v.value()),
+    //         None => None,
+    //     })
+    // }
 
-        Ok(match table.get(path_id)? {
-            Some(v) => Some(v.value().to_string()),
-            None => None,
-        })
-    }
-
-    pub fn get_id_by_path(&self, path: &str) -> anyhow::Result<Option<u64>> {
-        let tx = self.db.begin_read().context("begin_read() failed")?;
-        let table = tx.open_table(crate::schema::PATH_TO_ID)?;
-
-        Ok(match table.get(path)? {
-            Some(v) => Some(v.value()),
-            None => None,
-        })
-    }
-
-    pub fn upsert_file_and_index_sha256(
-        &self,
-        path: &str,
-        file_meta_blob: &[u8],
-        sha256_hex: &str,
-    ) -> anyhow::Result<u64> {
-        use crate::codec::{u64_list_pack, u64_list_unpack};
-    
-        let tx = self.db.begin_write().context("begin_write() failed")?;
-    
-        // Do all work in a scope so table borrows drop before commit.
-        let path_id: u64 = {
-            // Get or create path_id
-            let pid = {
-                let mut path_to_id = tx.open_table(crate::schema::PATH_TO_ID)?;
-                if let Some(v) = path_to_id.get(path)? {
-                    v.value()
-                } else {
-                    let mut id_to_path = tx.open_table(crate::schema::ID_TO_PATH)?;
-                    let mut kv = tx.open_table(crate::schema::KV_U64)?;
-    
-                    let next_id = match kv.get(crate::schema::KEY_NEXT_PATH_ID)? {
-                        Some(v) => v.value(),
-                        None => 1,
-                    };
-                    let new_id = next_id;
-                    kv.insert(crate::schema::KEY_NEXT_PATH_ID, next_id + 1)?;
-    
-                    path_to_id.insert(path, new_id)?;
-                    id_to_path.insert(new_id, path)?;
-                    new_id
-                }
-            };
-    
-            // Store file_meta
-            {
-                let mut fm = tx.open_table(crate::schema::FILE_META)?;
-                fm.insert(pid, file_meta_blob)?;
-            }
-    
-            // Update sha256 -> [path_id] index
-            {
-                let mut idx = tx.open_table(crate::schema::SHA256_TO_PATHS)?;
-    
-                let mut ids = match idx.get(sha256_hex)? {
-                    Some(v) => u64_list_unpack(v.value()),
-                    None => Vec::new(),
-                };
-    
-                // Keep unique + sorted for deterministic output
-                if ids.binary_search(&pid).is_err() {
-                    ids.push(pid);
-                    ids.sort_unstable();
-                    let packed = u64_list_pack(&ids);
-                    idx.insert(sha256_hex, packed.as_slice())?;
-                }
-            }
-    
-            pid
-        };
-    
-        tx.commit().context("commit() failed")?;
-        Ok(path_id)
-    }
-
-    pub fn write_batch_sha256_index(
+    pub fn write_batch_versions(
         &self,
         batch: &[(String, Vec<u8>, String)], // (path, file_meta_blob, sha256_hex)
     ) -> anyhow::Result<()> {
         use crate::codec::{u64_list_pack, u64_list_unpack};
 
-        tracing::trace!(batch_size = batch.len(), "Writing batch to DB");
-    
+        tracing::trace!(batch_size = batch.len(), "Writing batch to DB (versioned)");
+
         let tx = self.db.begin_write().context("begin_write() failed")?;
-    
+
         {
             let mut path_to_id = tx.open_table(crate::schema::PATH_TO_ID)?;
             let mut id_to_path = tx.open_table(crate::schema::ID_TO_PATH)?;
             let mut kv = tx.open_table(crate::schema::KV_U64)?;
-            let mut fm = tx.open_table(crate::schema::FILE_META)?;
-            let mut idx = tx.open_table(crate::schema::SHA256_TO_PATHS)?;
-    
+
+            let mut path_current = tx.open_table(crate::schema::PATH_CURRENT)?;
+            let mut file_meta = tx.open_table(crate::schema::FILE_META)?;
+            let mut file_to_path = tx.open_table(crate::schema::FILE_TO_PATH)?;
+            let mut file_state = tx.open_table(crate::schema::FILE_STATE)?;
+            let mut idx = tx.open_table(crate::schema::SHA256_TO_FILES)?;
+
             for (path, meta_blob, sha256_hex) in batch {
-                // get-or-create path_id
+                // 1) get-or-create path_id
                 let pid = if let Some(v) = path_to_id.get(path.as_str())? {
                     v.value()
                 } else {
@@ -225,30 +167,136 @@ impl DbHandle {
                     id_to_path.insert(new_id, path.as_str())?;
                     new_id
                 };
-    
-                // store file_meta
-                fm.insert(pid, meta_blob.as_slice())?;
-    
-                // update sha256 -> [path_id] list (sorted unique)
+
+                // 2) mark previous current as replaced (if any)
+                if let Some(prev) = path_current.get(pid)? {
+                    let prev_fid = prev.value();
+                    file_state.insert(prev_fid, FileState::Replaced.as_u8())?;
+                }
+
+                // 3) allocate new file_id
+                let next_fid = match kv.get(crate::schema::KEY_NEXT_FILE_ID)? {
+                    Some(v) => v.value(),
+                    None => 1,
+                };
+                let fid = next_fid;
+                kv.insert(crate::schema::KEY_NEXT_FILE_ID, next_fid + 1)?;
+
+                // 4) insert new version record
+                file_meta.insert(fid, meta_blob.as_slice())?;
+                file_to_path.insert(fid, pid)?;
+                file_state.insert(fid, FileState::Live.as_u8())?;
+                path_current.insert(pid, fid)?;
+
+                // 5) update sha256 -> [file_id] index (sorted unique)
                 let mut ids = match idx.get(sha256_hex.as_str())? {
                     Some(v) => u64_list_unpack(v.value()),
                     None => Vec::new(),
                 };
-    
-                if ids.binary_search(&pid).is_err() {
-                    ids.push(pid);
+
+                if ids.binary_search(&fid).is_err() {
+                    ids.push(fid);
                     ids.sort_unstable();
                     let packed = u64_list_pack(&ids);
                     idx.insert(sha256_hex.as_str(), packed.as_slice())?;
                 }
             }
-        } // tables dropped here
-    
+        }
+
         tx.commit().context("commit() failed")?;
         Ok(())
     }
+
     
-    
+    pub fn get_current_size_mtime_by_path(&self, path: &str) -> anyhow::Result<Option<(u64, u64)>> {
+        let tx = self.db.begin_read().context("begin_read() failed")?;
+        let path_to_id = tx.open_table(crate::schema::PATH_TO_ID)?;
+        let path_current = tx.open_table(crate::schema::PATH_CURRENT)?;
+        let file_meta = tx.open_table(crate::schema::FILE_META)?;
+
+        let Some(pid) = path_to_id.get(path)? else {
+            return Ok(None);
+        };
+        let pid = pid.value();
+
+        let Some(fid) = path_current.get(pid)? else {
+            return Ok(None);
+        };
+        let fid = fid.value();
+
+        let Some(blob) = file_meta.get(fid)? else {
+            return Ok(None);
+        };
+
+        let fm = crate::file_meta::FileMeta::decode(blob.value())
+        .with_context(|| format!("decode FileMeta for file_id={fid}"))?;
+
+        Ok(Some((fm.size, fm.mtime_secs)))
+    }
+
+    pub fn mark_missing_not_seen(
+        &self,
+        roots: &[String],
+        seen_paths: &std::collections::HashSet<String>,
+    ) -> anyhow::Result<u64> {
+        fn is_under_any_root(path: &str, roots: &[String]) -> bool {
+            for root in roots {
+                if path == root {
+                    return true;
+                }
+                if path.starts_with(root)
+                    && path.len() > root.len()
+                    && path.as_bytes()[root.len()] == b'/'
+                    {
+                        return true;
+                    }
+            }
+            false
+        }
+
+        use crate::file_meta::FileState;
+        use crate::schema::*;
+
+        let write_txn = self.db.begin_write()?;
+        let mut marked = 0u64;
+
+        {
+            let path_current = write_txn.open_table(PATH_CURRENT)?;
+            let id_to_path = write_txn.open_table(ID_TO_PATH)?;
+            let mut file_state = write_txn.open_table(FILE_STATE)?;
+
+            for entry in path_current.iter()? {
+                let (path_id_guard, file_id_guard) = entry?;
+                let path_id: u64 = path_id_guard.value();
+                let file_id: u64 = file_id_guard.value();
+
+                let path = match id_to_path.get(&path_id)? {
+                    Some(p) => p.value().to_string(),
+                    None => continue,
+                };
+
+                if !is_under_any_root(&path, roots) {
+                    continue;
+                }
+                if seen_paths.contains(&path) {
+                    continue;
+                }
+
+                let state: u8 = match file_state.get(&file_id)? {
+                    Some(s) => s.value(),
+                    None => continue,
+                };
+
+                if state == FileState::Live.as_u8() {
+                    file_state.insert(&file_id, FileState::Missing.as_u8())?;
+                    marked += 1;
+                }
+            }
+        } // <- tables dropped here, transaction no longer borrowed
+
+        write_txn.commit()?;
+        Ok(marked)
+    }
 }
 
 
@@ -307,3 +355,5 @@ hash_prefix = "sha1_4k_if_gt_4k"
 
     Ok(())
 }
+
+

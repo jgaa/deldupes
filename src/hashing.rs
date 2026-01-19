@@ -11,7 +11,7 @@ use std::path::Path;
 /// - sha1prefix_4k: SHA-1 of first 4096 bytes if size > 4096, else None
 ///
 /// `mtime_secs` and `size` are passed in from the caller (which already stat()'d the file).
-pub fn hash_file(path: &Path, mtime_secs: i64, size: u64) -> Result<FileMeta> {
+pub fn hash_file(path: &Path, mtime_secs: u64, size: u64) -> Result<FileMeta> {
     let sha1prefix_4k = if size > 4096 {
         Some(hash_prefix_sha1_4k(path)?)
     } else {

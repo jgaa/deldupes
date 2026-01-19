@@ -20,9 +20,9 @@ Written in Rust
 - Stats
   - Number and size of all files
   - Number and size of unique files
-  - Number and size of unique files
 - Check if file-name exists
 - Check if file-hash exist
+- Check if file exists
 
 **Performance:**
 - Hash calculations are done in parallel, using multiple threads

@@ -14,6 +14,7 @@ mod dupes;
 mod potential;
 mod path_filter;
 mod path_utils;
+mod stats;
 
 #[derive(Parser, Debug)]
 #[command(name = "deldupes")]
@@ -52,6 +53,11 @@ enum Command {
         /// Do not recurse; only scan immediate entries of the given directories
         #[arg(long, default_value_t = false)]
         no_recursive: bool,
+
+        /// Do not detect deleted files (do not mark missing)
+        #[arg(long = "no-detect-deletes", action = clap::ArgAction::SetFalse, default_value_t = true)]
+        detect_deletes: bool,
+
     },
 
     /// List duplicate files (by SHA-256)
@@ -61,17 +67,16 @@ enum Command {
     },
 
     /// List potential duplicates (same SHA-1 of first 4 KiB, size > 4 KiB)
-    Potential,
+    Potential {
+        /// Optional path prefixes to filter groups
+        paths: Vec<PathBuf>,
+    },
 
+    /// Show statistics about files, duplicates and reclaimable space
+    Stats,
 
     /// Print basic DB info (temporary helper command)
     DbInfo,
-
-    /// Simple DB write/read test: assigns a path_id and reads it back.
-    DbSmoke {
-        /// Path string to insert/lookup (does not need to exist on disk)
-        path: String,
-    },
 }
 
 fn main() {
@@ -95,6 +100,7 @@ fn run() -> Result<()> {
             threads,
             follow_symlinks,
             no_recursive,
+            detect_deletes
         } => {
             if paths.is_empty() {
                 return Err(anyhow!("scan requires at least one path"));
@@ -120,7 +126,7 @@ fn run() -> Result<()> {
             let dbh = db::open(&db_dir)
                 .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
 
-            scan::run_scan(dbh, paths, threads, follow_symlinks, !no_recursive)?;
+            scan::run_scan(dbh, paths, threads, follow_symlinks, !no_recursive, detect_deletes)?;
             Ok(())
         }
 
@@ -136,38 +142,31 @@ fn run() -> Result<()> {
             Ok(())
         }
         
-
-        Command::Potential => {
+        Command::Potential { paths } => {
             let dbh = db::open(&db_dir)
-                .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
-        
+            .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
+
             let groups = potential::load_groups(&dbh)?;
+            let filter = path_filter::PathFilter::new(&paths);
+            let groups = potential::filter_groups(groups, &filter);
+
             potential::print_groups(&groups);
             Ok(())
         }
-        
+
+        Command::Stats => {
+            let dbh = db::open(&db_dir)
+            .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
+
+            let s = stats::compute(&dbh)?;
+            stats::print(&s);
+            Ok(())
+        }
         
         Command::DbInfo => {
             let dbh = db::open(&db_dir)
                 .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
             println!("DB directory: {}", dbh.db_dir.display());
-            Ok(())
-        }
-
-        Command::DbSmoke { path } => {
-            let dbh = db::open(&db_dir)
-                .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
-
-            let id = dbh.get_or_create_path_id(&path)?;
-            let back = dbh.get_path_by_id(id)?;
-
-            println!("Inserted/Found:");
-            println!("  path: {}", path);
-            println!("  id:   {}", id);
-            println!(
-                "  back: {}",
-                back.unwrap_or_else(|| "<missing>".to_string())
-            );
             Ok(())
         }
     }

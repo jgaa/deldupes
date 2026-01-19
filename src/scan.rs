@@ -8,11 +8,15 @@ use crossbeam_channel as chan;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::thread;
+use std::sync::Arc;
 
 #[derive(Debug)]
 struct HashJob {
     path: PathBuf,
+    mtime: u64,
+    size: u64,
 }
+
 
 #[derive(Debug)]
 struct HashResult {
@@ -27,13 +31,22 @@ pub fn run_scan(
     threads: usize,
     follow_symlinks: bool,
     recursive: bool,
+    detect_deletes: bool
 ) -> Result<()> {
+    let db = Arc::new(db);
+    let norm_roots: Vec<String> = roots
+        .iter()
+        .map(|p| path_utils::normalize_path(p).map_err(anyhow::Error::from))
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let db_for_writer = db.clone();
+
     const RESULT_QUEUE_PER_THREAD: usize = 8192;
     let (res_tx, res_rx) = chan::bounded::<HashResult>(threads * RESULT_QUEUE_PER_THREAD);
     let (job_tx, job_rx) = chan::bounded::<HashJob>(threads * 256);
-    
-    // Writer thread owns the DB handle and will drop it (and unlock) when done.
-    let writer_handle = thread::spawn(move || writer_loop(db, res_rx));
+    let writer_handle = thread::spawn(move || writer_loop(db_for_writer, res_rx));
 
     // Spawn hash workers
     let mut workers = Vec::new();
@@ -48,7 +61,7 @@ pub fn run_scan(
     drop(res_tx);
 
     // Producer: walk filesystem and enqueue files
-    walk_and_enqueue(roots, follow_symlinks, recursive, &job_tx)?;
+    let seen =  walk_and_enqueue(db.clone(), roots, follow_symlinks, recursive, &job_tx)?;
     drop(job_tx); // close channel so workers exit when queue is drained
 
     tracing::debug!("all jobs enqueued, waiting for workers");
@@ -65,13 +78,19 @@ pub fn run_scan(
         .join()
         .map_err(|_| anyhow::anyhow!("writer thread panicked"))??;
 
+    if detect_deletes {
+        tracing::debug!("Looking for deleted files...");
+        let marked = db.mark_missing_not_seen(&norm_roots, &seen)?;
+        tracing::info!(marked, "marked deleted files as Missing");
+    }
+
     tracing::info!("scan complete");
 
     Ok(writer_result)
 }
 
 
-fn writer_loop(db: DbHandle, res_rx: chan::Receiver<HashResult>) -> Result<()> {
+fn writer_loop(db: Arc<DbHandle>, res_rx: chan::Receiver<HashResult>) -> Result<()> {
     const BATCH_SIZE: usize = 10_000;
 
     let mut indexed: u64 = 0;
@@ -83,7 +102,7 @@ fn writer_loop(db: DbHandle, res_rx: chan::Receiver<HashResult>) -> Result<()> {
         batch.push((r.path, blob, r.sha256_hex));
 
         if batch.len() >= BATCH_SIZE {
-            db.write_batch_sha256_index(&batch)?;
+            db.write_batch_versions(&batch)?;
             indexed += batch.len() as u64;
             batch.clear();
 
@@ -93,7 +112,7 @@ fn writer_loop(db: DbHandle, res_rx: chan::Receiver<HashResult>) -> Result<()> {
 
     // Flush remaining
     if !batch.is_empty() {
-        db.write_batch_sha256_index(&batch)?;
+        db.write_batch_versions(&batch)?;
         indexed += batch.len() as u64;
         batch.clear();
     }
@@ -115,26 +134,22 @@ fn worker_loop(rx: chan::Receiver<HashJob>, tx: chan::Sender<HashResult>) {
         let t0 = Instant::now();
 
         let r: Result<HashResult> = (|| {
+            // optional: still validate it's a file
             let md = std::fs::metadata(&path)
-                .with_context(|| format!("metadata {}", path.display()))?;
+            .with_context(|| format!("metadata {}", path.display()))?;
             if !md.is_file() {
                 return Err(anyhow::anyhow!("not a file"));
             }
 
-            let size = md.len();
-            let mtime = md.modified()
-                .with_context(|| format!("mtime {}", path.display()))?;
-            let mtime_secs = systemtime_to_unix_secs(mtime);
-
-            let meta = hashing::hash_file(&path, mtime_secs, size)
-                .with_context(|| format!("hash {}", path.display()))?;
+            let meta = hashing::hash_file(&path, job.mtime, job.size)
+            .with_context(|| format!("hash {}", path.display()))?;
 
             let sha256_hex = hex::encode(meta.sha256);
 
             Ok(HashResult {
                 path: path.to_string_lossy().to_string(),
-                meta,
-                sha256_hex,
+               meta,
+               sha256_hex,
             })
         })();
 
@@ -174,12 +189,14 @@ fn worker_loop(rx: chan::Receiver<HashJob>, tx: chan::Sender<HashResult>) {
 
 
 fn walk_and_enqueue(
+    db: Arc<DbHandle>,
     roots: Vec<PathBuf>,
     follow_symlinks: bool,
     recursive: bool,
     job_tx: &chan::Sender<HashJob>,
-) -> Result<()> {
+) -> anyhow::Result<HashSet<String>> {
     let mut visited_dirs: HashSet<(u64, u64)> = HashSet::new();
+    let mut seen: HashSet<String> = HashSet::new();
 
     for root in roots {
         if recursive {
@@ -196,49 +213,54 @@ fn walk_and_enqueue(
 
                 // WalkDir already knows the file type, but we still want the central logic.
                 if entry.file_type().is_file() {
-                    let _ = enqueue_if_candidate(entry.into_path(), job_tx);
+                    let _ = enqueue_if_candidate(&db, entry.into_path(), job_tx, &mut seen);
                 }
             }
         } else {
             if let Ok(rd) = std::fs::read_dir(&root) {
                 for e in rd.flatten() {
                     let p = e.path();
-                    let _ = enqueue_if_candidate(p, job_tx);
+                    let _ = enqueue_if_candidate(&db, p, job_tx, &mut seen);
                 }
             }
         }
     }
 
-    Ok(())
+    Ok(seen)
 }
 
-/// Enqueue a path if it is a file we want to process.
-/// Rules (v0):
-/// - must be a regular file
-/// - must be non-empty
-fn enqueue_if_candidate(path: PathBuf, job_tx: &chan::Sender<HashJob>) -> Result<()> {
-    // Cheap checks first (no normalization work if we won't enqueue)
+fn enqueue_if_candidate(db: &DbHandle, path: PathBuf,
+                        job_tx: &chan::Sender<HashJob>,
+                        seen: &mut HashSet<String>) -> Result<()> {
+    let norm = path_utils::normalize_path(&path)?;
+    let norm_str = norm.to_string_lossy().to_string();
+
+    // record seen BEFORE any early return
+    seen.insert(norm_str.clone());
+
+    // Cheap checks first
     let md = match std::fs::metadata(&path) {
         Ok(m) => m,
-        Err(_) => return Ok(()), // skip unreadable
+        Err(_) => return Ok(()),
     };
-
-    if !md.is_file() {
+    if !md.is_file() || md.len() == 0 {
         return Ok(());
     }
 
-    if md.len() == 0 {
-        return Ok(()); // skip empty files
-    }
-
-    // Now normalize (absolute + lexical cleanup)
-    let path = match path_utils::normalize_path(&path) {
-        Ok(p) => p,
-        Err(_) => return Ok(()), // skip if we can't normalize
+    let size = md.len();
+    let mtime = match md.modified() {
+        Ok(t) => systemtime_to_unix_secs(t),
+        Err(_) => return Ok(()),
     };
 
-    // Send job (ignore failure if receiver gone)
-    let _ = job_tx.send(HashJob { path });
+    // Preflight skip: if current meta matches size+mtime => assume unchanged
+    if let Some((cur_size, cur_mtime)) = db.get_current_size_mtime_by_path(&norm_str)? {
+        if cur_size == size && cur_mtime == mtime {
+            return Ok(());
+        }
+    }
+
+    let _ = job_tx.send(HashJob { path: norm, mtime, size });
     Ok(())
 }
 
@@ -259,3 +281,6 @@ fn filter_dir_entry(e: &walkdir::DirEntry, visited_dirs: &mut HashSet<(u64, u64)
     }
     true
 }
+
+
+

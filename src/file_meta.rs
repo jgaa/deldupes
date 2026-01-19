@@ -1,5 +1,29 @@
 use anyhow::{anyhow, Result};
 
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileState {
+    Live = 0,
+    Replaced = 1,
+    Missing = 2,
+}
+
+impl FileState {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(FileState::Live),
+            1 => Some(FileState::Replaced),
+            2 => Some(FileState::Missing),
+            _ => None,
+        }
+    }
+
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+
 /// In-memory representation of per-path metadata.
 ///
 /// This is what the rest of the program uses.
@@ -7,7 +31,7 @@ use anyhow::{anyhow, Result};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMeta {
     pub size: u64,
-    pub mtime_secs: i64,
+    pub mtime_secs: u64,
     pub sha256: [u8; 32],
     pub sha1prefix_4k: Option<[u8; 20]>,
 }
@@ -15,7 +39,7 @@ pub struct FileMeta {
 impl FileMeta {
     pub fn new(
         size: u64,
-        mtime_secs: i64,
+        mtime_secs: u64,
         sha256: [u8; 32],
         sha1prefix_4k: Option<[u8; 20]>,
     ) -> Self {
@@ -85,7 +109,7 @@ impl FileMeta {
         // mtime
         let mut mt_arr = [0u8; 8];
         mt_arr.copy_from_slice(&bytes[10..18]);
-        let mtime_secs = i64::from_le_bytes(mt_arr);
+        let mtime_secs = u64::from_le_bytes(mt_arr);
 
         // sha256
         let mut sha256 = [0u8; 32];

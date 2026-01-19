@@ -1,6 +1,7 @@
-use crate::codec::u64_list_unpack;
 use crate::db::DbHandle;
+use crate::dupe_groups;
 use crate::file_meta::{FileMeta, FileState};
+use crate::path_filter::PathFilter;
 use anyhow::{Context, Result};
 use redb::ReadableTable;
 
@@ -22,82 +23,58 @@ pub struct Stats {
 }
 
 pub fn compute(db: &DbHandle) -> Result<Stats> {
-    let tx = db.db.begin_read().context("begin_read() failed")?;
-
-    let file_meta = tx.open_table(crate::schema::FILE_META)?;
-    let file_state = tx.open_table(crate::schema::FILE_STATE)?;
-    let idx = tx.open_table(crate::schema::SHA256_TO_FILES)?;
-
     let mut out = Stats::default();
 
     // 1) Count live files and bytes (and version totals)
-    for item in file_state.iter()? {
-        let (k, v) = item?;
-        let file_id = k.value();
-        let st_u8 = v.value();
+    {
+        let tx = db.db.begin_read().context("begin_read() failed")?;
 
-        out.total_versions += 1;
+        let file_meta = tx.open_table(crate::schema::FILE_META)?;
+        let file_state = tx.open_table(crate::schema::FILE_STATE)?;
 
-        let Some(st) = FileState::from_u8(st_u8) else {
-            continue;
-        };
+        for item in file_state.iter()? {
+            let (k, v) = item?;
+            let file_id = k.value();
+            let st_u8 = v.value();
 
-        match st {
-            FileState::Live => {
-                if let Some(blob) = file_meta.get(file_id)? {
-                    let fm = FileMeta::decode(blob.value())
-                    .with_context(|| format!("decode file_meta for file_id={file_id}"))?;
-                    out.live_files += 1;
-                    out.live_bytes = out.live_bytes.saturating_add(fm.size);
-                }
-            }
-            FileState::Replaced => out.replaced_versions += 1,
-            FileState::Missing => out.missing_versions += 1,
-        }
-    }
+            out.total_versions += 1;
 
-    // 2) Duplicate stats: only consider Live file_ids
-    for item in idx.iter()? {
-        let (_k, v) = item?;
-        let file_ids = u64_list_unpack(v.value());
-
-        if file_ids.len() < 2 {
-            continue;
-        }
-
-        // Filter to Live file_ids and get size from first live record
-        let mut live_ids: Vec<u64> = Vec::new();
-        let mut size_opt: Option<u64> = None;
-
-        for fid in file_ids {
-            let Some(st) = file_state.get(fid)? else { continue };
-            let Some(state) = FileState::from_u8(st.value()) else { continue };
-            if state != FileState::Live {
+            let Some(st) = FileState::from_u8(st_u8) else {
                 continue;
-            }
+            };
 
-            if size_opt.is_none() {
-                if let Some(blob) = file_meta.get(fid)? {
-                    let fm = FileMeta::decode(blob.value())
-                    .with_context(|| format!("decode file_meta for file_id={fid}"))?;
-                    size_opt = Some(fm.size);
+            match st {
+                FileState::Live => {
+                    if let Some(blob) = file_meta.get(file_id)? {
+                        let fm = FileMeta::decode(blob.value())
+                        .with_context(|| format!("decode file_meta for file_id={file_id}"))?;
+                        out.live_files += 1;
+                        out.live_bytes = out.live_bytes.saturating_add(fm.size);
+                    }
                 }
+                FileState::Replaced => out.replaced_versions += 1,
+                FileState::Missing => out.missing_versions += 1,
             }
-
-            live_ids.push(fid);
         }
+    } // tx + tables dropped here
 
-        if live_ids.len() < 2 {
-            continue;
-        }
+    // 2) Duplicate stats: use shared dupe-group loader
+    let filter = PathFilter::new(&[]); // empty = match all
+    let groups = dupe_groups::load_live_dupe_groups(db, &filter)?;
 
-        let size = size_opt.unwrap_or(0);
+    out.dupe_groups = groups.len() as u64;
 
-        out.dupe_groups += 1;
-        out.dupe_extra_files += (live_ids.len() as u64) - 1;
+    for g in &groups {
+        // entries are Live and >= 2 by construction
+        let n = g.entries.len() as u64;
+
+        // all entries in a sha256 group should have same size; take first
+        let size = g.entries.first().map(|e| e.size).unwrap_or(0);
+
+        out.dupe_extra_files += n - 1;
         out.dupe_bytes = out
         .dupe_bytes
-        .saturating_add(((live_ids.len() as u64) - 1).saturating_mul(size));
+        .saturating_add((n - 1).saturating_mul(size));
     }
 
     Ok(out)

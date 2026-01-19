@@ -4,6 +4,8 @@ use sha1::Digest as Sha1Digest;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
+use crate::types::Sha256;
+
 
 /// Hash a file and return its FileMeta.
 ///
@@ -41,7 +43,7 @@ fn hash_prefix_sha1_4k(path: &Path) -> Result<[u8; 20]> {
     Ok(out)
 }
 
-fn hash_full_sha256(path: &Path) -> Result<[u8; 32]> {
+pub fn hash_full_sha256(path: &Path) -> Result<Sha256> {
     let f = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut r = BufReader::new(f);
 

@@ -9,6 +9,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::thread;
 use std::sync::Arc;
+use crate::types::Sha256;
+
 
 #[derive(Debug)]
 struct HashJob {
@@ -22,7 +24,6 @@ struct HashJob {
 struct HashResult {
     path: String,
     meta: FileMeta,
-    sha256_hex: String,
 }
 
 pub fn run_scan(
@@ -94,12 +95,12 @@ fn writer_loop(db: Arc<DbHandle>, res_rx: chan::Receiver<HashResult>) -> Result<
     const BATCH_SIZE: usize = 10_000;
 
     let mut indexed: u64 = 0;
-    let mut batch: Vec<(String, Vec<u8>, String)> = Vec::with_capacity(BATCH_SIZE);
+    let mut batch: Vec<(String, Vec<u8>, Sha256)> = Vec::with_capacity(BATCH_SIZE);
 
     while let Ok(r) = res_rx.recv() {
         // Prepare DB item
         let blob = r.meta.encode();
-        batch.push((r.path, blob, r.sha256_hex));
+        batch.push((r.path, blob, r.meta.sha256));
 
         if batch.len() >= BATCH_SIZE {
             db.write_batch_versions(&batch)?;
@@ -144,12 +145,9 @@ fn worker_loop(rx: chan::Receiver<HashJob>, tx: chan::Sender<HashResult>) {
             let meta = hashing::hash_file(&path, job.mtime, job.size)
             .with_context(|| format!("hash {}", path.display()))?;
 
-            let sha256_hex = hex::encode(meta.sha256);
-
             Ok(HashResult {
                 path: path.to_string_lossy().to_string(),
                meta,
-               sha256_hex,
             })
         })();
 

@@ -5,13 +5,37 @@ use redb::{Database, ReadableTable};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use crate::file_meta::FileState;
+use crate::schema;
+use crate::file_meta::{FileMeta, FileState};
+use crate::types::Sha256;
+
 
 pub struct DbHandle {
     pub db_dir: PathBuf,
     pub db: Database,
     // Keep the lock file open for the lifetime of DbHandle, so the lock is held.
     _lock_file: File,
+}
+
+pub struct CurrentByPath {
+    pub file_id: u64,
+    pub state: FileState,
+    pub meta: FileMeta,
+    pub sha256: Sha256,
+}
+
+pub struct LiveMatch {
+    pub file_id: u64,
+    pub path: String,
+    pub meta: FileMeta,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShaEntry {
+    pub file_id: u64,
+    pub state: FileState,
+    pub path: String,
+    pub meta: FileMeta,
 }
 
 /// Open a deldupes database directory:
@@ -75,65 +99,9 @@ impl DbHandle {
         Ok(())
     }
 
-//     pub fn get_or_create_path_id(&self, path: &str) -> anyhow::Result<u64> {
-//         let tx = self.db.begin_write().context("begin_write() failed")?;
-//
-//         // Put table borrows in a scope so they drop before commit.
-//         let id: u64 = {
-//             let mut path_to_id = tx.open_table(crate::schema::PATH_TO_ID)?;
-//             let mut id_to_path = tx.open_table(crate::schema::ID_TO_PATH)?;
-//             let mut kv = tx.open_table(crate::schema::KV_U64)?;
-//
-//             // Fast path: already exists
-//             if let Some(v) = path_to_id.get(path)? {
-//                 v.value()
-//             } else {
-//                 // Allocate new id from KV_U64("next_path_id")
-//                 let next_id = match kv.get(crate::schema::KEY_NEXT_PATH_ID)? {
-//                     Some(v) => v.value(),
-//                     None => 1, // start at 1
-//                 };
-//
-//                 let new_id = next_id;
-//                 kv.insert(crate::schema::KEY_NEXT_PATH_ID, next_id + 1)?;
-//
-//                 // Insert both mappings
-//                 path_to_id.insert(path, new_id)?;
-//                 id_to_path.insert(new_id, path)?;
-//
-//                 new_id
-//             }
-//             // <-- tables dropped here (end of scope)
-//         };
-//
-//         tx.commit().context("commit() failed")?;
-//         Ok(id)
-//     }
-//
-//
-//     pub fn get_path_by_id(&self, path_id: u64) -> anyhow::Result<Option<String>> {
-//         let tx = self.db.begin_read().context("begin_read() failed")?;
-//         let table = tx.open_table(crate::schema::ID_TO_PATH)?;
-//
-//         Ok(match table.get(path_id)? {
-//             Some(v) => Some(v.value().to_string()),
-//             None => None,
-//         })
-//     }
-
-    // pub fn get_id_by_path(&self, path: &str) -> anyhow::Result<Option<u64>> {
-    //     let tx = self.db.begin_read().context("begin_read() failed")?;
-    //     let table = tx.open_table(crate::schema::PATH_TO_ID)?;
-    //
-    //     Ok(match table.get(path)? {
-    //         Some(v) => Some(v.value()),
-    //         None => None,
-    //     })
-    // }
-
     pub fn write_batch_versions(
         &self,
-        batch: &[(String, Vec<u8>, String)], // (path, file_meta_blob, sha256_hex)
+        batch: &[(String, Vec<u8>, Sha256)], // (path, file_meta_blob, sha256)
     ) -> anyhow::Result<()> {
         use crate::codec::{u64_list_pack, u64_list_unpack};
 
@@ -152,7 +120,7 @@ impl DbHandle {
             let mut file_state = tx.open_table(crate::schema::FILE_STATE)?;
             let mut idx = tx.open_table(crate::schema::SHA256_TO_FILES)?;
 
-            for (path, meta_blob, sha256_hex) in batch {
+            for (path, meta_blob, sha256) in batch {
                 // 1) get-or-create path_id
                 let pid = if let Some(v) = path_to_id.get(path.as_str())? {
                     v.value()
@@ -189,7 +157,7 @@ impl DbHandle {
                 path_current.insert(pid, fid)?;
 
                 // 5) update sha256 -> [file_id] index (sorted unique)
-                let mut ids = match idx.get(sha256_hex.as_str())? {
+                let mut ids = match idx.get(sha256)? {
                     Some(v) => u64_list_unpack(v.value()),
                     None => Vec::new(),
                 };
@@ -198,7 +166,7 @@ impl DbHandle {
                     ids.push(fid);
                     ids.sort_unstable();
                     let packed = u64_list_pack(&ids);
-                    idx.insert(sha256_hex.as_str(), packed.as_slice())?;
+                    idx.insert(sha256, packed.as_slice())?;
                 }
             }
         }
@@ -297,6 +265,115 @@ impl DbHandle {
         write_txn.commit()?;
         Ok(marked)
     }
+
+    pub fn mark_files_missing(&self, file_ids: &[u64]) -> anyhow::Result<()> {
+        use crate::file_meta::FileState;
+        use anyhow::Context;
+
+        let tx = self.db.begin_write().context("begin_write() failed")?;
+        {
+            let mut file_state = tx.open_table(crate::schema::FILE_STATE)?;
+            for &fid in file_ids {
+                // Copy the byte out of the AccessGuard so it drops immediately.
+                let state_u8: Option<u8> = file_state.get(fid)?.map(|st| st.value());
+
+                if let Some(v) = state_u8 {
+                    if v == FileState::Live.as_u8() {
+                        file_state.insert(fid, FileState::Missing.as_u8())?;
+                    }
+                }
+            }
+        }
+        tx.commit().context("commit() failed")?;
+        Ok(())
+    }
+
+    pub fn get_current_by_path(&self, norm_path: &str) -> Result<Option<CurrentByPath>> {
+        let tx = self.db.begin_read().context("begin_read failed")?;
+
+        let path_to_id = tx.open_table(schema::PATH_TO_ID)?;
+        let Some(pid) = path_to_id.get(norm_path)? else {
+            return Ok(None);
+        };
+        let path_id = pid.value();
+
+        let path_current = tx.open_table(schema::PATH_CURRENT)?;
+        let Some(fid) = path_current.get(path_id)? else {
+            return Ok(None);
+        };
+        let file_id = fid.value();
+
+        let file_state = tx.open_table(schema::FILE_STATE)?;
+        let state_u8 = file_state
+        .get(file_id)?
+        .map(|v| v.value())
+        .unwrap_or(FileState::Missing.as_u8());
+        let state = FileState::from_u8(state_u8).unwrap_or(FileState::Missing);
+
+        let file_meta = tx.open_table(schema::FILE_META)?;
+        let Some(meta_blob) = file_meta.get(file_id)? else {
+            return Ok(None);
+        };
+        let meta = FileMeta::decode(meta_blob.value())?;
+
+        Ok(Some(CurrentByPath {
+            file_id,
+            state,
+            sha256: meta.sha256,
+                meta,
+        }))
+    }
+
+    // Read-only: returns ALL file_ids recorded for this sha, with current path + state + meta.
+    // Does not filter by Live.
+    pub fn lookup_files_by_sha256(&self, sha256: &Sha256) -> anyhow::Result<Vec<ShaEntry>> {
+        let tx = self.db.begin_read().context("begin_read failed")?;
+
+        let sha_tbl = tx.open_table(crate::schema::SHA256_TO_FILES)?;
+        let Some(fids_blob) = sha_tbl.get(sha256)? else {
+            return Ok(vec![]);
+        };
+
+        let file_ids = crate::codec::u64_list_unpack(fids_blob.value());
+
+        let file_state = tx.open_table(crate::schema::FILE_STATE)?;
+        let file_meta = tx.open_table(crate::schema::FILE_META)?;
+        let file_to_path = tx.open_table(crate::schema::FILE_TO_PATH)?;
+        let id_to_path = tx.open_table(crate::schema::ID_TO_PATH)?;
+
+        let mut out = Vec::new();
+
+        for fid in file_ids {
+            let state = match file_state.get(fid)? {
+                Some(st) => FileState::from_u8(st.value()).unwrap_or(FileState::Missing),
+                None => FileState::Missing,
+            };
+
+            let Some(meta_blob) = file_meta.get(fid)? else { continue };
+            let meta = FileMeta::decode(meta_blob.value())
+            .with_context(|| format!("decode file_meta for file_id={fid}"))?;
+
+            let path = if let Some(pid) = file_to_path.get(fid)? {
+                if let Some(p) = id_to_path.get(pid.value())? {
+                    p.value().to_string()
+                } else {
+                    "<unknown-path>".to_string()
+                }
+            } else {
+                "<unknown-path>".to_string()
+            };
+
+            out.push(ShaEntry {
+                file_id: fid,
+                state,
+                path,
+                meta,
+            });
+        }
+
+        Ok(out)
+    }
+
 }
 
 

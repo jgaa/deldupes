@@ -15,6 +15,10 @@ mod potential;
 mod path_filter;
 mod path_utils;
 mod stats;
+mod dupe_groups;
+mod delete;
+mod check;
+mod types;
 
 #[derive(Parser, Debug)]
 #[command(name = "deldupes")]
@@ -70,6 +74,34 @@ enum Command {
     Potential {
         /// Optional path prefixes to filter groups
         paths: Vec<PathBuf>,
+    },
+
+    /// Safely delete duplicate files (dry-run by default)
+    Delete {
+        /// Optional path prefixes: only delete dupes within these paths.
+        /// If omitted, operates on all duplicate groups.
+        paths: Vec<PathBuf>,
+
+        /// Actually delete files. Without this flag, it's a dry-run.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+
+        /// Which file to preserve when we must keep one.
+        #[arg(long, value_enum, default_value_t = delete::Preserve::Oldest)]
+        preserve: delete::Preserve,
+    },
+
+    /// Check whether files exist in the database:
+    /// 1) try path + (size,mtime)
+    /// 2) otherwise hash and try sha256 lookup
+    /// Also prints duplicates for the file's checksum.
+    Check {
+        /// One or more file paths to check
+        paths: Vec<std::path::PathBuf>,
+
+        /// Print only status tokens (one per input path)
+        #[arg(long, default_value_t = false)]
+        quiet: bool,
     },
 
     /// Show statistics about files, duplicates and reclaimable space
@@ -132,15 +164,13 @@ fn run() -> Result<()> {
 
         Command::Dupes { paths } => {
             let dbh = db::open(&db_dir)
-                .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
-        
-            let groups = dupes::load_groups(&dbh)?;
+            .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
+
             let filter = path_filter::PathFilter::new(&paths);
-            let groups = dupes::filter_groups(groups, &filter);
-        
-            dupes::print_groups(&groups);
+            dupes::run_dupes(&dbh, &filter)?;
             Ok(())
         }
+
         
         Command::Potential { paths } => {
             let dbh = db::open(&db_dir)
@@ -151,6 +181,21 @@ fn run() -> Result<()> {
             let groups = potential::filter_groups(groups, &filter);
 
             potential::print_groups(&groups);
+            Ok(())
+        }
+
+        Command::Delete { paths, apply, preserve } => {
+            let dbh = db::open(&db_dir)
+            .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
+
+            let filter = path_filter::PathFilter::new(&paths);
+            delete::run_delete(&dbh, &filter, preserve, apply)?;
+            Ok(())
+        }
+
+        Command::Check { paths, quiet } => {
+            let dbh = db::open(&db_dir)?;
+            check::run_check(&dbh, &paths, quiet)?;
             Ok(())
         }
 

@@ -5,12 +5,14 @@ use redb::ReadableTable;
 use std::collections::HashMap;
 use crate::path_filter::PathFilter;
 use crate::file_meta::FileState;
+use crate::types::Sha256;
+
 
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub path: String,
     pub size: u64,
-    pub sha256: [u8; 32],
+    pub sha256: Sha256,
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +67,7 @@ pub fn load_groups(db: &DbHandle) -> Result<Vec<PotentialGroup>> {
         }
 
         // Group by full sha256 within this prefix group
-        let mut by_sha: HashMap<[u8; 32], Vec<Entry>> = HashMap::new();
+        let mut by_sha: HashMap<Sha256, Vec<Entry>> = HashMap::new();
         for e in entries {
             by_sha.entry(e.sha256).or_default().push(e);
         }

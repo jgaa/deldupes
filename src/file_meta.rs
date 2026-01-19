@@ -1,4 +1,6 @@
 use anyhow::{anyhow, Result};
+use crate::types::Sha256;
+
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,7 +34,7 @@ impl FileState {
 pub struct FileMeta {
     pub size: u64,
     pub mtime_secs: u64,
-    pub sha256: [u8; 32],
+    pub sha256: Sha256,
     pub sha1prefix_4k: Option<[u8; 20]>,
 }
 
@@ -40,7 +42,7 @@ impl FileMeta {
     pub fn new(
         size: u64,
         mtime_secs: u64,
-        sha256: [u8; 32],
+        sha256: Sha256,
         sha1prefix_4k: Option<[u8; 20]>,
     ) -> Self {
         Self {

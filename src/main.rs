@@ -64,7 +64,7 @@ enum Command {
 
     },
 
-    /// List duplicate files (by SHA-256)
+    /// List duplicate files (by BLAKE3-256)
     Dupes {
         /// Optional path prefixes to filter groups
         paths: Vec<PathBuf>,
@@ -93,7 +93,7 @@ enum Command {
 
     /// Check whether files exist in the database:
     /// 1) try path + (size,mtime)
-    /// 2) otherwise hash and try sha256 lookup
+    /// 2) otherwise hash and try hash256 lookup
     /// Also prints duplicates for the file's checksum.
     Check {
         /// One or more file paths to check
@@ -104,10 +104,10 @@ enum Command {
         quiet: bool,
     },
 
-    /// Like `check`, but input is sha256 hashes (or sha256sum output lines).
+    /// Like `check`, but input is blake3-256 hashes (or b3sum output lines).
     /// Does not touch the filesystem and does not modify the database.
     CheckHash {
-        /// One or more SHA-256 hashes (64 hex), or full `sha256sum` output lines.
+        /// One or more Blake3 hashes (64 hex), or full `b3sum` output lines.
         hashes: Vec<String>,
 
         /// Print only status tokens (one per input)

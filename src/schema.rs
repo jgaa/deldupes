@@ -1,5 +1,5 @@
 use redb::TableDefinition;
-use crate::types::Sha256;
+use crate::types::Hash256;
 
 
 // path identity (stable)
@@ -24,6 +24,6 @@ pub const FILE_TO_PATH: TableDefinition<u64, u64> = TableDefinition::new("file_t
 // file_id -> state (0=Live, 1=Replaced, 2=Missing [future])
 pub const FILE_STATE: TableDefinition<u64, u8> = TableDefinition::new("file_state");
 
-// sha256 hex -> packed list of file_id (u64 LE)
-pub const SHA256_TO_FILES: TableDefinition<Sha256, &[u8]> = TableDefinition::new("sha256_to_files");
+// blake3 hex -> packed list of file_id (u64 LE)
+pub const HASH256_TO_FILES: TableDefinition<Hash256, &[u8]> = TableDefinition::new("hash256_to_files");
 

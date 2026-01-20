@@ -68,7 +68,7 @@ pub fn compute(db: &DbHandle) -> Result<Stats> {
         // entries are Live and >= 2 by construction
         let n = g.entries.len() as u64;
 
-        // all entries in a sha256 group should have same size; take first
+        // all entries in a hash256 group should have same size; take first
         let size = g.entries.first().map(|e| e.size).unwrap_or(0);
 
         out.dupe_extra_files += n - 1;

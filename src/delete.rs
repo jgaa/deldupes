@@ -32,7 +32,7 @@ pub fn run_delete(db: &DbHandle, filter: &PathFilter, preserve: Preserve, apply:
         total_delete += plan.to_delete.len();
 
         // Print plan (always)
-        println!("GROUP {}", hex::encode(g.sha256));
+        println!("GROUP {}", hex::encode(g.hash256));
         if let Some(k) = &plan.keeper {
             println!("  KEEP {}", k.path);
         } else {
@@ -49,7 +49,7 @@ pub fn run_delete(db: &DbHandle, filter: &PathFilter, preserve: Preserve, apply:
 
         if apply {
             apply_group_plan(db, &plan)
-            .with_context(|| format!("Failed applying delete plan for sha256={}", hex::encode(g.sha256)))?;
+            .with_context(|| format!("Failed applying delete plan for hash={}", hex::encode(g.hash256)))?;
         }
     }
 

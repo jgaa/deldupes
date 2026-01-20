@@ -5,7 +5,7 @@ use crate::path_utils;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use crate::types::Sha256;
+use crate::types::Hash256;
 
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -61,7 +61,7 @@ fn check_one(db: &DbHandle, input_path: &Path, quiet: bool) -> Result<Status> {
                 if !quiet {
                     println!(
                         "  DB   found current: file_id={} state={:?} size={} mtime={}",
-                        cur.file_id, cur.state, cur.meta.size, cur.meta.mtime_secs
+                        cur.file_id, cur.state, cur.meta.size, format_mtime(cur.meta.mtime_secs)
                     );
                 }
 
@@ -89,9 +89,10 @@ fn check_one(db: &DbHandle, input_path: &Path, quiet: bool) -> Result<Status> {
     };
 
     let md = md.unwrap();
+    
     if !md.is_file() {
         if !quiet {
-            println!("  DISK not a regular file (skipping)");
+            println!("  Not a regular file (skipping)");
         }
         return Ok(Status::NotFound);
     }
@@ -100,7 +101,7 @@ fn check_one(db: &DbHandle, input_path: &Path, quiet: bool) -> Result<Status> {
     let mtime = crate::codec::systemtime_to_unix_secs(md.modified().unwrap_or(SystemTime::UNIX_EPOCH));
 
     if !quiet {
-        println!("  DISK size={} mtime={}", size, mtime);
+        println!("  DISK size={} mtime={}", size, format_mtime(mtime));
     }
 
     // 1) Try direct path->current match, then compare (size,mtime)
@@ -108,7 +109,7 @@ fn check_one(db: &DbHandle, input_path: &Path, quiet: bool) -> Result<Status> {
         if !quiet {
             println!(
                 "  DB   found current: file_id={} state={:?} size={} mtime={}",
-                cur.file_id, cur.state, cur.meta.size, cur.meta.mtime_secs
+                cur.file_id, cur.state, cur.meta.size, format_mtime(cur.meta.mtime_secs)
             );
         }
 
@@ -116,12 +117,12 @@ fn check_one(db: &DbHandle, input_path: &Path, quiet: bool) -> Result<Status> {
             // Matched identity — we know the sha without hashing.
             if !quiet {
                 println!("  RESULT SAME (matched by path + (size,mtime))");
-                println!("  SHA256 {}", hex::encode(cur.meta.sha256));
+                println!("  Blake256 {}", hex::encode(cur.meta.hash256));
             }
 
             // Always show duplicates list (unless quiet)
             if !quiet {
-                print_dupes_for_sha(db, &cur.meta.sha256)?;
+                print_dupes_for_sha(db, &cur.meta.hash256, Some(cur.file_id))?;
             }
 
             return Ok(Status::Exists);
@@ -133,16 +134,16 @@ fn check_one(db: &DbHandle, input_path: &Path, quiet: bool) -> Result<Status> {
     }
 
     // 2) Hash and look up by sha
-    let sha256 = hashing::hash_full_sha256(&norm)
+    let hash256 = hashing::hash_full_hash256(&norm)
     .with_context(|| format!("Failed to hash {}", norm_s))?;
 
-    let sha_hex = hex::encode(sha256);
+    let sha_hex = hex::encode(hash256);
 
     if !quiet {
-        println!("  SHA256 {}", sha_hex);
+        println!("  Blake256 {}", sha_hex);
     }
 
-    let entries = db.lookup_files_by_sha256(&sha256)?;
+    let entries = db.lookup_files_by_hash256(&hash256)?;
 
     if entries.is_empty() {
         if !quiet {
@@ -159,41 +160,22 @@ fn check_one(db: &DbHandle, input_path: &Path, quiet: bool) -> Result<Status> {
             println!("  RESULT FOUND_BY_HASH ({} db entry/entries)", entries.len());
         }
         if !quiet {
-            print_entries_as_dupes(&entries);
+            print_hash_peers(&entries, None);
         }
         Ok(Status::Exists)
     } else {
         if !quiet {
             println!("  RESULT KNOWN_REMOVED_BY_HASH (checksum known but no Live entries)");
-            print_entries_as_dupes(&entries);
+            print_hash_peers(&entries, None);
         }
         Ok(Status::KnownRemoved)
     }
 }
 
-fn print_dupes_for_sha(db: &DbHandle, sha256: &Sha256) -> Result<()> {
-    let entries = db.lookup_files_by_sha256(&sha256)?;
-    if entries.is_empty() {
-        println!("  DUPES (none in DB?)");
-        return Ok(());
-    }
-
-    println!("  DUPES ({} db entry/entries)", entries.len());
-    print_entries_as_dupes(&entries);
+fn print_dupes_for_sha(db: &DbHandle, hash256: &Hash256, exclude_file_id: Option<u64>) -> Result<()> {
+    let entries = db.lookup_files_by_hash256(&hash256)?;
+    print_hash_peers(&entries, exclude_file_id);
     Ok(())
-}
-
-fn print_entries_as_dupes(entries: &[crate::db::ShaEntry]) {
-    // deterministic: sort by path
-    let mut v = entries.to_vec();
-    v.sort_by(|a, b| a.path.cmp(&b.path));
-
-    for e in &v {
-        println!(
-            "    [{:?}] file_id={} size={} mtime={} path={}",
-            e.state, e.file_id, e.meta.size, e.meta.mtime_secs, e.path
-        );
-    }
 }
 
 pub fn run_check_hashes(db: &DbHandle, inputs: &[String], quiet: bool) -> Result<()> {
@@ -202,8 +184,8 @@ pub fn run_check_hashes(db: &DbHandle, inputs: &[String], quiet: bool) -> Result
     }
 
     for s in inputs {
-        let (sha, sha_hex) = parse_sha256sum_line(s)
-            .with_context(|| format!("Invalid sha256 input: {s}"))?;
+        let (sha, sha_hex) = parse_blake256sum_line(s)
+            .with_context(|| format!("Invalid hash256 input: {s}"))?;
 
         let st = check_by_sha(db, &sha, &sha_hex, quiet)?;
 
@@ -223,12 +205,12 @@ pub fn run_check_hashes(db: &DbHandle, inputs: &[String], quiet: bool) -> Result
     Ok(())
 }
 
-fn check_by_sha(db: &DbHandle, sha256: &Sha256, sha_hex: &str, quiet: bool) -> Result<Status> {
+fn check_by_sha(db: &DbHandle, hash256: &Hash256, sha_hex: &str, quiet: bool) -> Result<Status> {
     if !quiet {
-        println!("SHA256 {}", sha_hex);
+        println!("Blake256 {}", sha_hex);
     }
 
-    let entries = db.lookup_files_by_sha256(sha256)?;
+    let entries = db.lookup_files_by_hash256(hash256)?;
 
     if entries.is_empty() {
         if !quiet {
@@ -243,13 +225,13 @@ fn check_by_sha(db: &DbHandle, sha256: &Sha256, sha_hex: &str, quiet: bool) -> R
         if !quiet {
             println!("  RESULT FOUND_BY_HASH ({} db entry/entries)", entries.len());
             // Same dupe list format as `check`
-            print_entries_as_dupes(&entries);
+            print_hash_peers(&entries, None);
         }
         Ok(Status::Exists)
     } else {
         if !quiet {
             println!("  RESULT KNOWN_REMOVED_BY_HASH (checksum known but no Live entries)");
-            print_entries_as_dupes(&entries);
+            print_hash_peers(&entries, None);
         }
         Ok(Status::KnownRemoved)
     }
@@ -260,7 +242,7 @@ fn check_by_sha(db: &DbHandle, sha256: &Sha256, sha_hex: &str, quiet: bool) -> R
 /// - "64hex  filename"
 /// - "64hex *filename"
 /// - (any extra whitespace)
-fn parse_sha256sum_line(s: &str) -> Result<(Sha256, String)> {
+fn parse_blake256sum_line(s: &str) -> Result<(Hash256, String)> {
     let first = s
         .split_whitespace()
         .next()
@@ -269,7 +251,7 @@ fn parse_sha256sum_line(s: &str) -> Result<(Sha256, String)> {
     let hex = first.trim();
 
     if hex.len() != 64 {
-        return Err(anyhow::anyhow!("sha256 must be 64 hex chars, got {}", hex.len()));
+        return Err(anyhow::anyhow!("hash256 must be 64 hex chars, got {}", hex.len()));
     }
 
     let mut out = [0u8; 32];
@@ -295,4 +277,54 @@ fn decode_hex_32(hex: &str, out: &mut [u8; 32]) -> Result<()> {
         out[i] = (hi << 4) | lo;
     }
     Ok(())
+}
+
+
+fn print_hash_peers(entries: &[crate::db::ShaEntry], exclude_file_id: Option<u64>) {
+    let mut peers: Vec<_> = entries
+        .iter()
+        .filter(|e| exclude_file_id.map_or(true, |id| e.file_id != id))
+        .cloned()
+        .collect();
+
+    // Sort for deterministic output
+    peers.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let live = peers.iter().filter(|e| e.state == FileState::Live).count();
+
+    if peers.is_empty() {
+        println!("  UNIQUE (no other DB entries with this hash)");
+        return;
+    }
+
+    if live >= 1 {
+        // If there is at least one other Live entry, then the original file has a duplicate.
+        // (Because the original is also Live, that means >=2 live in total.)
+        println!("  DUPES ({} other live, {} other total)", live, peers.len());
+        for e in &peers {
+            println!(
+                "    [{:?}] file_id={} size={} mtime={} path={}",
+                e.state, e.file_id, e.meta.size, format_mtime(e.meta.mtime_secs), e.path
+            );
+        }
+    } else {
+        println!("  UNIQUE ({} historical entry/entries)", peers.len());
+        for e in &peers {
+            println!(
+                "    [{:?}] file_id={} size={} mtime={} path={}",
+                e.state, e.file_id, e.meta.size, format_mtime(e.meta.mtime_secs), e.path
+            );
+        }
+    }
+}
+
+use chrono::{DateTime, Local, TimeZone};
+
+fn format_mtime(mtime_secs: u64) -> String {
+    // Clamp invalid values defensively
+    let secs = i64::try_from(mtime_secs).unwrap_or(0);
+    let dt: DateTime<Local> = Local.timestamp_opt(secs, 0)
+        .single()
+        .unwrap_or_else(|| Local.timestamp(0, 0));
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }

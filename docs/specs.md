@@ -1,18 +1,20 @@
 # deldupes
 
-**Fast duplicate file detection and safe removal**
+**Fast duplicate file detection and safe removal (Linux-only, current design)**
 
 ## 1. Purpose
 
-`deldupes` is a high-performance CLI tool written in Rust to **index**, **identify**, and **safely delete** duplicate files across very large directory trees (millions of files).
+`deldupes` is a correctness-first CLI tool written in Rust to **index**, **inspect**, and **safely delete** duplicate files across large directory trees.
 
 Primary design goals:
 
-* Extremely fast indexing on modern SSD/NVMe storage
-* Predictable, safe deletion semantics
+* Safe, predictable deletion semantics (dry-run by default)
 * Deterministic results
-* Portable, self-contained databases
-* Clear internal model suitable for long-term maintenance and AI-assisted development
+* Incremental scans without re-hashing unchanged files
+* Portable, self-contained database directories (“namespaces”)
+* Developer-friendly internal model (stable, testable, easy to extend)
+
+Scope (current): **Linux only**.
 
 ---
 
@@ -20,39 +22,33 @@ Primary design goals:
 
 ### Core idea
 
-* The filesystem is scanned once to build a **content index**
-* Files are identified by **strong cryptographic hashes**
-* Lookup structures are maintained on disk to make duplicate detection O(1)
-* Deletion is **planned**, **audited**, and **verified** before execution
+* The filesystem is scanned to build a **content index**
+* Files are identified by a **strong 256-bit hash**
+* The database maintains indexes for fast:
+
+  * duplicate grouping
+  * “does this file/hash exist?” queries
+  * stats summaries
+* Deletion is planned and executed with strict safety rules
 
 ### Architecture
 
-* **Producer–consumer pipeline**
-* **Parallel hashing workers**
-* **Single database writer**
-* **Append-friendly embedded key-value store**
+* Producer–consumer pipeline
+* Parallel hashing workers
+* Single database writer (serialized writes)
+* Embedded key-value store (`redb`)
 
 ---
 
-## 3. Database model
+## 3. Database namespace model
 
-### Namespace model
-
-A *namespace* is a **standalone database directory**.
+A *namespace* is a standalone database directory.
 
 * Each DB directory is:
 
   * self-contained
   * portable between machines
   * independent of other datasets
-* No internal namespace IDs or name mappings exist
-
-This simplifies:
-
-* mental model
-* key layout
-* backup/migration
-* cross-machine use
 
 ---
 
@@ -64,37 +60,11 @@ This simplifies:
 --db <db-name-or-path>
 ```
 
-### Resolution rules
+Resolution rules remain as previously specified (name → default base dir; path separators → treat as explicit directory). For Linux, the default base dir is:
 
-1. **If `<db>` contains no path separators**
-   (e.g. `photos`, `backup2025`):
-
-   * Treated as a **database name**
-   * Placed in the default DB base directory:
-
-     * Linux: `~/.local/share/deldupes/`
-     * macOS: `~/Library/Application Support/deldupes/`
-     * Windows: `%LOCALAPPDATA%\deldupes\`
-   * Final path example:
-
-     ```
-     ~/.local/share/deldupes/photos/
-     ```
-
-2. **If `<db>` contains path separators**
-   (e.g. `/mnt/data/.deldupesdb`, `./mydb`):
-
-   * Treated as a **directory path**
-   * Used verbatim
-
-### Validation rules
-
-* If the directory **does not exist** → create it
-* If the directory **exists**:
-
-  * If it contains a valid `deldupes` DB → open it
-  * If it exists but **does not contain the expected DB files** → **abort**
-    (never silently reuse or overwrite foreign directories)
+```
+~/.local/share/deldupes/<name>/
+```
 
 ---
 
@@ -103,9 +73,11 @@ This simplifies:
 ```
 <db-dir>/
 ├── index.redb      # Main database
-├── meta.toml       # Schema + version + options snapshot
+├── meta.toml       # Schema + version + options snapshot (optional/near-term)
 └── LOCK            # Advisory lock (single writer)
 ```
+
+(Exact supporting files may evolve; `index.redb` is the authoritative DB store.)
 
 ---
 
@@ -113,23 +85,22 @@ This simplifies:
 
 ### Authoritative hash (duplicate identity)
 
-* Algorithm: **SHA-256**
-* Applied to the entire file
-* Stored as raw 32 bytes
-* Hex-encoded (lowercase) only for CLI output
-* Must match `sha256sum` output exactly
+* Concept name: **hash256**
+* Storage: raw **32 bytes** (`[u8; 32]`)
+* CLI output: lowercase hex (64 chars)
+* Current algorithm: **BLAKE3-256**
+
+  * Users who want to compute hashes externally should use `b3sum` / `blake3` tools.
+
+> Note: The internal names intentionally avoid embedding algorithm names (“sha256”) so the project can switch algorithms without renaming everything again.
 
 ### Prefix hash (candidate filter)
 
-* Algorithm: **SHA-1**
-* Hashes **first 4096 bytes**
-* Computed **only if file size > 4096**
+* Algorithm: **SHA-1** (first 4096 bytes)
+* Computed only if file size > 4096
 * Stored as raw 20 bytes
-* Used only for:
-
-  * “potential duplicates”
-  * pre-filtering
-* **Never** used for deletion decisions
+* Used only for “potential duplicates” / informational grouping
+* Never used as a deletion criterion
 
 ---
 
@@ -137,129 +108,141 @@ This simplifies:
 
 ### Symlink behavior
 
-* Default: **do not follow symlinks**
-* `--follow-symlinks` enables following both file and directory symlinks
+* Default: do not follow symlinks
+* Future flag may allow following symlinks; recursion safety must be preserved
 
-### Recursion safety
+### Path storage / normalization
 
-To prevent infinite recursion:
+* Paths are normalized in a deterministic way:
 
-* Directories are identified by `(dev, inode)` on Unix
-* A directory is visited **only once**
-* When following symlinks, recursion checks still apply
-
-### Path storage
-
-* Paths are stored as **observed**, not canonicalized
-* Optional future flag: `--canonicalize-paths` (off by default)
+  * absolute
+  * lexical cleanup (`.` / `..`)
+  * **no symlink canonicalization**
+* Stored path is the normalized path string
 
 ---
 
-## 8. Internal pipeline
+## 8. File identity and versioned model
+
+### Identity shortcut (for rehash decisions)
+
+A file at a given path is considered “unchanged” if both match:
+
+* `size` (u64)
+* `mtime_secs` (u64, seconds since epoch)
+
+If unchanged: avoid hashing.
+
+If changed / new: compute `hash256` and update the DB.
+
+### Versioned file entries (important)
+
+The DB stores **file versions** as independent entries.
+
+* Each version is identified by a unique `file_id (u64)`
+* Each path points to a current `file_id`
+* Old versions are retained and marked with state
+
+This supports:
+
+* incremental scanning
+* historical accounting (replaced/missing)
+* safe delete behavior
+* future verification tooling
+
+### File states
+
+Per `file_id`, one of:
+
+* `Live`     — currently present as a valid, current file version
+* `Replaced` — superseded by a newer version for the same path
+* `Missing`  — known removed or otherwise not present anymore
+
+---
+
+## 9. Internal pipeline
 
 ### Threads
 
-#### Main thread
+**Main thread**
 
 * Parse CLI
 * Resolve DB directory
-* Build unique root path set
 * Traverse filesystem
-* Push file paths to job queue
-* Close job queue when traversal finishes
+* Push file paths into job queue
+* Close queue when traversal finishes
 
-#### Hash worker threads (N)
+**Hash worker threads (N)**
 
 * Consume `HashJob`
 * `stat()` file
-* Detect changes via `(size, mtime)`
+* Detect changes via `(size, mtime_secs)`
 * Compute:
 
-  * SHA-1 prefix hash (if applicable)
-  * SHA-256 full hash
+  * SHA-1 prefix (if applicable)
+  * hash256 full hash
 * Emit `HashResult`
 
-#### Database writer thread (1)
+**Database writer thread (1)**
 
-* Consumes `HashResult`
-* Performs all DB updates
-* Commits in batches
+* Consume `HashResult`
+* Perform all DB updates
+* Commit in batches
 
-### Communication
-
-* MPMC channels
-* Clean shutdown via channel close + thread join
-* No shared mutable DB state outside writer thread
+Communication: MPMC channels; clean shutdown via channel close + joins.
 
 ---
 
-## 9. Path identity
+## 10. Logical database tables (current model)
 
-### Path IDs
+Names may evolve, but the functional model is:
 
-* Each unique path string maps to a numeric `path_id (u64)`
-* Path strings stored once
-* All indexes reference `path_id`
-* Dramatically reduces duplication in hash buckets
+### Path storage
 
----
+* `path_to_id`: `path_string -> path_id (u64)`
+* `id_to_path`: `path_id -> path_string`
 
-## 10. Logical database tables
+### Path current version mapping
 
-### `path_to_id`
+* `path_current`: `path_id -> current file_id`
 
-* key: `path_string`
-* value: `path_id`
+### File metadata by version
 
-### `id_to_path`
+* `file_meta`: `file_id -> encoded FileMeta`
 
-* key: `path_id`
-* value: `path_string`
+  * includes: size, mtime_secs, hash256, sha1prefix(optional)
 
-### `file_meta`
+### File state by version
 
-* key: `path_id`
-* value:
+* `file_state`: `file_id -> u8 state`
 
-  * `size (u64)`
-  * `mtime`
-  * `sha256 (32 bytes | null)`
-  * `sha1_prefix (20 bytes | null)`
-  * `first_seen`
-  * `last_seen`
+### File-to-path association
 
-### `sha256_to_paths`
+* `file_to_path`: `file_id -> path_id` (the observed path for that version)
 
-* key: `sha256`
-* value: set/list of `path_id`
+### Content index
 
-### `sha1prefix_to_paths`
+* `hash256_to_files`: `hash256([u8;32]) -> packed list of file_id`
 
-* key: `sha1_prefix`
-* value: set/list of `path_id`
+### Prefix index (potential duplicates)
 
-### Optional `observations` (history mode)
-
-* key: `(path_id, observed_at)`
-* value: `{ size, mtime, sha256, sha1_prefix }`
+* `sha1prefix_to_files`: `sha1prefix([u8;20]) -> packed list of file_id` (or path_id; implementation-defined)
 
 ---
 
-## 11. Refresh modes
-
-### Change detection
+## 11. Refresh modes / change detection
 
 A file is rehashed if:
 
 * it is new, OR
-* `size` or `mtime` differs from stored metadata
+* `size` differs, OR
+* `mtime_secs` differs
 
-### Policies
+Policies supported (current behavior implied by versioned model):
 
-* **append-only**
-* **update-changed**
-* **prune-missing**
-* Policies may be combined
+* append new versions when changed
+* mark prior versions as `Replaced`
+* optionally mark missing (future: explicit “prune missing” mode)
 
 ---
 
@@ -267,60 +250,86 @@ A file is rehashed if:
 
 ### Authoritative duplicates
 
-* Grouped by SHA-256
-* Buckets with ≥2 members
+* Grouped by `hash256`
+* Only `Live` versions are used for duplicate groups shown to the user
+* Buckets with ≥2 Live members are duplicates
 
 ### Potential duplicates
 
 * Grouped by SHA-1 prefix
-* Optional size bucketing
 * Informational only
 
 ---
 
-## 13. Deletion semantics
+## 13. Deletion semantics (current)
 
-### Planning (always first)
+Deletion is based on **authoritative duplicate groups** (hash256 groups).
 
-* Build deletion plan from SHA-256 groups
-* Apply user scope filters
+### Defaults
 
-### Selection rules
+* **Dry-run by default**
+* `--apply` is required to delete anything
+* Absolute safety rule: **never delete all copies** in any duplicate group
 
-* If all duplicates are within target paths:
+### Path scoping
 
-  * **keep oldest by mtime**
-  * tie-break lexicographically
-* If some duplicates are outside target paths:
+If paths are provided to delete:
 
-  * delete only those inside target paths
+* Only entries whose paths match the provided prefixes are eligible
 
-### Safety checks
+Rules per duplicate group:
 
-* Re-stat file immediately before deletion
-* If metadata changed → skip
-* Optional `--paranoid` re-hash before delete
+1. If **all duplicates** in the group are inside the provided paths:
 
-### Execution
+   * keep exactly **one** (according to preserve strategy)
+   * delete the rest
+2. If **some duplicates** are outside the provided paths:
 
-* Default: `--dry-run`
-* `--apply` required to delete
+   * delete **all copies inside** the provided paths
+   * keep those outside (ensures at least one remains)
+
+### Preserve strategies (when we must keep one)
+
+User-selectable:
+
+* oldest (default)
+* newest
+* shortest path
+* longest path
+* alphabetically first (full path sort)
+* alphabetically last (full path sort)
 
 ---
 
-## 14. Statistics and queries
+## 14. Queries and inspection commands
 
-### Stats
+### `check` (by path)
 
-* Total files
-* Total bytes
-* Unique files (by SHA-256)
-* Duplicate count and size
+A read-only command (no DB mutation) that accepts one or more file paths.
 
-### Queries
+For each path:
 
-* Check if a filename exists
-* Check if a SHA-256 exists
+1. Normalize path
+2. If the file exists on disk:
+
+   * compare `(size, mtime_secs)` against DB “current” entry
+   * if same → report EXISTS and show hash256
+   * else → compute hash256 and look up by hash
+3. If file is not readable/missing:
+
+   * still report what DB knows about the path (including “known missing” if DB state indicates so)
+4. Output includes the “duplicate list” for that hash (DB entries for the hash), including state info.
+
+`--quiet` prints only status tokens (script-friendly), e.g. `EXISTS`, `KNOWN_REMOVED`, `NOT_FOUND`.
+
+### `check-hash` (by hash)
+
+Like `check`, but accepts one or more **hash256 hex strings** (or full `b3sum` output lines).
+
+* Looks up the hash in the DB
+* Prints the same dupe listing output as `check`
+* `--quiet` available
+* Read-only (no DB mutation)
 
 ---
 
@@ -328,30 +337,37 @@ A file is rehashed if:
 
 ```
 deldupes scan      --db photos /mnt/photos
-deldupes refresh   --db photos --update-changed --prune-missing
 deldupes dupes     --db photos
 deldupes potential --db photos
-deldupes delete    --db photos --in /mnt/photos/Downloads --dry-run
 deldupes stats     --db photos
+
+deldupes check     --db photos /path/to/file1 /path/to/file2
+deldupes check     --db photos --quiet /path/to/file
+
+deldupes check-hash --db photos <hash256>
+b3sum /path/to/file | deldupes --db photos check-hash "<line>"
+
+deldupes delete    --db photos /mnt/photos/Downloads          # dry-run
+deldupes delete    --db photos --apply --preserve newest /mnt/photos/Downloads
 ```
 
 ---
 
-## 16. Non-goals (v1)
+## 16. Non-goals (current)
 
-* Filesystem-level deduplication (hardlinks, reflinks)
-* Chunk-level or rolling-hash dedupe
+* Filesystem-level deduplication (hardlinks/reflinks)
+* Chunk-level/rolling-hash dedupe
 * Network scanning
 * Automatic repair of partial files
+* Cross-platform support (Linux only for now)
 
 ---
 
 ## 17. Design philosophy
 
-* **Correctness before cleverness**
-* **Speed through structure**, not shortcuts
-* **Safe defaults**
-* **Portable state**
-* **Deterministic behavior**
-* **Explicit user intent for destructive actions**
+* Correctness before cleverness
+* Safe defaults (dry-run, never delete all copies)
+* Deterministic behavior
+* Explicit user intent for destructive actions
+* Internal naming avoids locking in algorithm names (“hash256” not “sha256”)
 

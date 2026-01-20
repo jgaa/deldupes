@@ -7,7 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use crate::schema;
 use crate::file_meta::{FileMeta, FileState};
-use crate::types::Sha256;
+use crate::types::Hash256;
 
 
 pub struct DbHandle {
@@ -86,7 +86,7 @@ impl DbHandle {
             let _ = tx.open_table(crate::schema::PATH_CURRENT)?;
             let _ = tx.open_table(crate::schema::FILE_TO_PATH)?;
             let _ = tx.open_table(crate::schema::FILE_STATE)?;
-            let _ = tx.open_table(crate::schema::SHA256_TO_FILES)?;
+            let _ = tx.open_table(crate::schema::HASH256_TO_FILES)?;
         }
         tx.commit().context("commit() failed")?;
         Ok(())
@@ -94,7 +94,7 @@ impl DbHandle {
 
     pub fn write_batch_versions(
         &self,
-        batch: &[(String, Vec<u8>, Sha256)], // (path, file_meta_blob, sha256)
+        batch: &[(String, Vec<u8>, Hash256)], // (path, file_meta_blob, hash256)
     ) -> anyhow::Result<()> {
         use crate::codec::{u64_list_pack, u64_list_unpack};
 
@@ -111,9 +111,9 @@ impl DbHandle {
             let mut file_meta = tx.open_table(crate::schema::FILE_META)?;
             let mut file_to_path = tx.open_table(crate::schema::FILE_TO_PATH)?;
             let mut file_state = tx.open_table(crate::schema::FILE_STATE)?;
-            let mut idx = tx.open_table(crate::schema::SHA256_TO_FILES)?;
+            let mut idx = tx.open_table(crate::schema::HASH256_TO_FILES)?;
 
-            for (path, meta_blob, sha256) in batch {
+            for (path, meta_blob, hash256) in batch {
                 // 1) get-or-create path_id
                 let pid = if let Some(v) = path_to_id.get(path.as_str())? {
                     v.value()
@@ -149,8 +149,8 @@ impl DbHandle {
                 file_state.insert(fid, FileState::Live.as_u8())?;
                 path_current.insert(pid, fid)?;
 
-                // 5) update sha256 -> [file_id] index (sorted unique)
-                let mut ids = match idx.get(sha256)? {
+                // 5) update hash256 -> [file_id] index (sorted unique)
+                let mut ids = match idx.get(hash256)? {
                     Some(v) => u64_list_unpack(v.value()),
                     None => Vec::new(),
                 };
@@ -159,7 +159,7 @@ impl DbHandle {
                     ids.push(fid);
                     ids.sort_unstable();
                     let packed = u64_list_pack(&ids);
-                    idx.insert(sha256, packed.as_slice())?;
+                    idx.insert(hash256, packed.as_slice())?;
                 }
             }
         }
@@ -318,11 +318,11 @@ impl DbHandle {
 
     // Read-only: returns ALL file_ids recorded for this sha, with current path + state + meta.
     // Does not filter by Live.
-    pub fn lookup_files_by_sha256(&self, sha256: &Sha256) -> anyhow::Result<Vec<ShaEntry>> {
+    pub fn lookup_files_by_hash256(&self, hash256: &Hash256) -> anyhow::Result<Vec<ShaEntry>> {
         let tx = self.db.begin_read().context("begin_read failed")?;
 
-        let sha_tbl = tx.open_table(crate::schema::SHA256_TO_FILES)?;
-        let Some(fids_blob) = sha_tbl.get(sha256)? else {
+        let sha_tbl = tx.open_table(crate::schema::HASH256_TO_FILES)?;
+        let Some(fids_blob) = sha_tbl.get(hash256)? else {
             return Ok(vec![]);
         };
 
@@ -412,7 +412,7 @@ fn write_meta(meta_path: &Path) -> Result<()> {
 format = 1
 app = "deldupes"
 db_kind = "redb"
-hash_full = "sha256"
+hash_full = "hash256"
 hash_prefix = "sha1_4k_if_gt_4k"
 "#;
 

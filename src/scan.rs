@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::thread;
 use std::sync::Arc;
-use crate::types::Sha256;
+use crate::types::Hash256;
 
 
 #[derive(Debug)]
@@ -95,12 +95,12 @@ fn writer_loop(db: Arc<DbHandle>, res_rx: chan::Receiver<HashResult>) -> Result<
     const BATCH_SIZE: usize = 10_000;
 
     let mut indexed: u64 = 0;
-    let mut batch: Vec<(String, Vec<u8>, Sha256)> = Vec::with_capacity(BATCH_SIZE);
+    let mut batch: Vec<(String, Vec<u8>, Hash256)> = Vec::with_capacity(BATCH_SIZE);
 
     while let Ok(r) = res_rx.recv() {
         // Prepare DB item
         let blob = r.meta.encode();
-        batch.push((r.path, blob, r.meta.sha256));
+        batch.push((r.path, blob, r.meta.hash256));
 
         if batch.len() >= BATCH_SIZE {
             db.write_batch_versions(&batch)?;

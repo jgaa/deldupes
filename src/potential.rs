@@ -5,14 +5,14 @@ use redb::ReadableTable;
 use std::collections::HashMap;
 use crate::path_filter::PathFilter;
 use crate::file_meta::FileState;
-use crate::types::Sha256;
+use crate::types::Hash256;
 
 
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub path: String,
     pub size: u64,
-    pub sha256: Sha256,
+    pub hash256: Hash256,
 }
 
 #[derive(Debug, Clone)]
@@ -55,7 +55,7 @@ pub fn load_groups(db: &DbHandle) -> Result<Vec<PotentialGroup>> {
         let Some(p) = id_to_path.get(pid)? else { continue; };
         let path = p.value().to_string();
 
-        map.entry(prefix).or_default().push(Entry { path, size: fm.size, sha256: fm.sha256 });
+        map.entry(prefix).or_default().push(Entry { path, size: fm.size, hash256: fm.hash256 });
     }
 
     // Convert to groups and keep only groups with >= 2 entries
@@ -66,13 +66,13 @@ pub fn load_groups(db: &DbHandle) -> Result<Vec<PotentialGroup>> {
             return None;
         }
 
-        // Group by full sha256 within this prefix group
-        let mut by_sha: HashMap<Sha256, Vec<Entry>> = HashMap::new();
+        // Group by full hash256 within this prefix group
+        let mut by_sha: HashMap<Hash256, Vec<Entry>> = HashMap::new();
         for e in entries {
-            by_sha.entry(e.sha256).or_default().push(e);
+            by_sha.entry(e.hash256).or_default().push(e);
         }
 
-        // Keep only sha256 buckets that have exactly 1 file (i.e., not exact dupes)
+        // Keep only hash256 buckets that have exactly 1 file (i.e., not exact dupes)
         let mut filtered: Vec<Entry> = Vec::new();
         for (_sha, mut bucket) in by_sha {
             if bucket.len() == 1 {

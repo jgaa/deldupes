@@ -4,7 +4,7 @@ use crate::file_meta::{FileMeta, FileState};
 use crate::path_filter::PathFilter;
 use anyhow::{Context, Result};
 use redb::ReadableTable;
-use crate::types::Sha256;
+use crate::types::Hash256;
 
 
 #[derive(Debug, Clone)]
@@ -17,7 +17,7 @@ pub struct DupeEntry {
 
 #[derive(Debug, Clone)]
 pub struct DupeGroup {
-    pub sha256: Sha256,
+    pub hash256: Hash256,
     pub entries: Vec<DupeEntry>, // Live only; len >= 2
     pub header_path: String,     // derived: shortest path
 }
@@ -25,7 +25,7 @@ pub struct DupeGroup {
 pub fn load_live_dupe_groups(db: &DbHandle, filter: &PathFilter) -> Result<Vec<DupeGroup>> {
     let tx = db.db.begin_read().context("begin_read() failed")?;
 
-    let idx = tx.open_table(crate::schema::SHA256_TO_FILES)?;
+    let idx = tx.open_table(crate::schema::HASH256_TO_FILES)?;
     let file_state = tx.open_table(crate::schema::FILE_STATE)?;
     let file_to_path = tx.open_table(crate::schema::FILE_TO_PATH)?;
     let id_to_path = tx.open_table(crate::schema::ID_TO_PATH)?;
@@ -35,7 +35,7 @@ pub fn load_live_dupe_groups(db: &DbHandle, filter: &PathFilter) -> Result<Vec<D
 
     for item in idx.iter()? {
         let (k, v) = item?;
-        let sha256 = k.value();
+        let hash256 = k.value();
         let fids = u64_list_unpack(v.value());
 
         if fids.len() < 2 {
@@ -99,7 +99,7 @@ pub fn load_live_dupe_groups(db: &DbHandle, filter: &PathFilter) -> Result<Vec<D
         .clone();
 
         groups.push(DupeGroup {
-            sha256,
+            hash256,
             entries,
             header_path,
         });
@@ -109,7 +109,7 @@ pub fn load_live_dupe_groups(db: &DbHandle, filter: &PathFilter) -> Result<Vec<D
     groups.sort_by(|a, b| {
         a.header_path
         .cmp(&b.header_path)
-        .then_with(|| a.sha256.cmp(&b.sha256))
+        .then_with(|| a.hash256.cmp(&b.hash256))
     });
 
     Ok(groups)

@@ -1,3 +1,3 @@
 // src/types.rs
-pub type Sha256 = [u8; 32];
+pub type Hash256 = [u8; 32];
 

@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use crate::types::Sha256;
+use crate::types::Hash256;
 
 
 #[repr(u8)]
@@ -34,7 +34,7 @@ impl FileState {
 pub struct FileMeta {
     pub size: u64,
     pub mtime_secs: u64,
-    pub sha256: Sha256,
+    pub hash256: Hash256,
     pub sha1prefix_4k: Option<[u8; 20]>,
 }
 
@@ -42,13 +42,13 @@ impl FileMeta {
     pub fn new(
         size: u64,
         mtime_secs: u64,
-        sha256: Sha256,
+        hash256: Hash256,
         sha1prefix_4k: Option<[u8; 20]>,
     ) -> Self {
         Self {
             size,
             mtime_secs,
-            sha256,
+            hash256,
             sha1prefix_4k,
         }
     }
@@ -60,7 +60,7 @@ impl FileMeta {
     /// [1]      u8  flags (bit0 = has_sha1prefix)
     /// [2..10]  u64 size LE
     /// [10..18] i64 mtime_secs LE
-    /// [18..50] [u8;32] sha256
+    /// [18..50] [u8;32] Blake256
     /// [50..70] [u8;20] sha1prefix (optional)
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(70);
@@ -74,7 +74,7 @@ impl FileMeta {
 
         out.extend_from_slice(&self.size.to_le_bytes());
         out.extend_from_slice(&self.mtime_secs.to_le_bytes());
-        out.extend_from_slice(&self.sha256);
+        out.extend_from_slice(&self.hash256);
 
         if let Some(p) = &self.sha1prefix_4k {
             out.extend_from_slice(p);
@@ -113,9 +113,9 @@ impl FileMeta {
         mt_arr.copy_from_slice(&bytes[10..18]);
         let mtime_secs = u64::from_le_bytes(mt_arr);
 
-        // sha256
-        let mut sha256 = [0u8; 32];
-        sha256.copy_from_slice(&bytes[18..50]);
+        // hash
+        let mut hash256 = [0u8; 32];
+        hash256.copy_from_slice(&bytes[18..50]);
 
         // sha1prefix (optional)
         let sha1prefix_4k = if has_prefix {
@@ -135,7 +135,7 @@ impl FileMeta {
         Ok(Self {
             size,
             mtime_secs,
-            sha256,
+            hash256,
             sha1prefix_4k,
         })
     }

@@ -1,5 +1,7 @@
 # deldupes
 
+![banner image](images/deldups_image.jpg)
+
 `deldupes` is a Linux tool that helps you **find and safely remove duplicate files**.
 
 It is designed to be **careful by default**:
@@ -8,6 +10,7 @@ It is designed to be **careful by default**:
 - it avoids making guesses when things are unclear
 
 This makes it suitable for large folders such as photo collections, downloads, backups, and project directories.
+
 
 ---
 
@@ -58,3 +61,6 @@ If `deldupes` is unsure, it does nothing.
 
 ```bash
 cargo build --release
+```
+
+\* *(Banner image created by ChatGPT)*

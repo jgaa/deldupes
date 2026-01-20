@@ -21,13 +21,6 @@ pub struct CurrentByPath {
     pub file_id: u64,
     pub state: FileState,
     pub meta: FileMeta,
-    pub sha256: Sha256,
-}
-
-pub struct LiveMatch {
-    pub file_id: u64,
-    pub path: String,
-    pub meta: FileMeta,
 }
 
 #[derive(Debug, Clone)]
@@ -319,8 +312,7 @@ impl DbHandle {
         Ok(Some(CurrentByPath {
             file_id,
             state,
-            sha256: meta.sha256,
-                meta,
+            meta,
         }))
     }
 

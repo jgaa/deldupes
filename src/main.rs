@@ -104,6 +104,17 @@ enum Command {
         quiet: bool,
     },
 
+    /// Like `check`, but input is sha256 hashes (or sha256sum output lines).
+    /// Does not touch the filesystem and does not modify the database.
+    CheckHash {
+        /// One or more SHA-256 hashes (64 hex), or full `sha256sum` output lines.
+        hashes: Vec<String>,
+
+        /// Print only status tokens (one per input)
+        #[arg(long, default_value_t = false)]
+        quiet: bool,
+    },
+
     /// Show statistics about files, duplicates and reclaimable space
     Stats,
 
@@ -196,6 +207,12 @@ fn run() -> Result<()> {
         Command::Check { paths, quiet } => {
             let dbh = db::open(&db_dir)?;
             check::run_check(&dbh, &paths, quiet)?;
+            Ok(())
+        }
+
+        Command::CheckHash { hashes, quiet } => {
+            let dbh = db::open(&db_dir)?;
+            check::run_check_hashes(&dbh, &hashes, quiet)?;
             Ok(())
         }
 

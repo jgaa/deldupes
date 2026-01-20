@@ -195,3 +195,104 @@ fn print_entries_as_dupes(entries: &[crate::db::ShaEntry]) {
         );
     }
 }
+
+pub fn run_check_hashes(db: &DbHandle, inputs: &[String], quiet: bool) -> Result<()> {
+    if inputs.is_empty() {
+        anyhow::bail!("check-hash requires at least one hash");
+    }
+
+    for s in inputs {
+        let (sha, sha_hex) = parse_sha256sum_line(s)
+            .with_context(|| format!("Invalid sha256 input: {s}"))?;
+
+        let st = check_by_sha(db, &sha, &sha_hex, quiet)?;
+
+        if quiet {
+            let token = match st {
+                Status::Exists => "EXISTS",
+                Status::KnownRemoved => "KNOWN_REMOVED",
+                Status::NotFound => "NOT_FOUND",
+            };
+            // keep the original token (first field) for traceability
+            println!("{token} {sha_hex}");
+        } else {
+            println!();
+        }
+    }
+
+    Ok(())
+}
+
+fn check_by_sha(db: &DbHandle, sha256: &Sha256, sha_hex: &str, quiet: bool) -> Result<Status> {
+    if !quiet {
+        println!("SHA256 {}", sha_hex);
+    }
+
+    let entries = db.lookup_files_by_sha256(sha256)?;
+
+    if entries.is_empty() {
+        if !quiet {
+            println!("  RESULT NOT_FOUND (checksum not in DB)");
+        }
+        return Ok(Status::NotFound);
+    }
+
+    let any_live = entries.iter().any(|e| e.state == FileState::Live);
+
+    if any_live {
+        if !quiet {
+            println!("  RESULT FOUND_BY_HASH ({} db entry/entries)", entries.len());
+            // Same dupe list format as `check`
+            print_entries_as_dupes(&entries);
+        }
+        Ok(Status::Exists)
+    } else {
+        if !quiet {
+            println!("  RESULT KNOWN_REMOVED_BY_HASH (checksum known but no Live entries)");
+            print_entries_as_dupes(&entries);
+        }
+        Ok(Status::KnownRemoved)
+    }
+}
+
+/// Accept either:
+/// - "64hex"
+/// - "64hex  filename"
+/// - "64hex *filename"
+/// - (any extra whitespace)
+fn parse_sha256sum_line(s: &str) -> Result<(Sha256, String)> {
+    let first = s
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("empty input"))?;
+
+    let hex = first.trim();
+
+    if hex.len() != 64 {
+        return Err(anyhow::anyhow!("sha256 must be 64 hex chars, got {}", hex.len()));
+    }
+
+    let mut out = [0u8; 32];
+    decode_hex_32(hex, &mut out)?;
+
+    Ok((out, hex.to_string()))
+}
+
+fn decode_hex_32(hex: &str, out: &mut [u8; 32]) -> Result<()> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let bytes = hex.as_bytes();
+    for i in 0..32 {
+        let hi = val(bytes[2 * i]).ok_or_else(|| anyhow::anyhow!("invalid hex"))?;
+        let lo = val(bytes[2 * i + 1]).ok_or_else(|| anyhow::anyhow!("invalid hex"))?;
+        out[i] = (hi << 4) | lo;
+    }
+    Ok(())
+}

@@ -46,3 +46,5 @@ indicatif = "0.17"
 directories = "5.0"
 
 fs2 = "0.4"
+memmap2 = "0.9"
+libc = "0.2"

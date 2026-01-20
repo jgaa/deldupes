@@ -1,5 +1,7 @@
 # deldupes
 
+[![CI](https://github.com/jgaa/deldupes/actions/workflows/ci.yml/badge.svg)](https://github.com/jgaa/deldupes/actions/workflows/ci.yml)
+
 ![banner image](images/deldups_image.jpg)
 
 `deldupes` is a Linux tool that helps you **find and safely remove duplicate files**.

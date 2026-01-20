@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (debug)
+        run: cargo build --locked
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      # Optional: makes it easy to download the binary from CI runs (not a GitHub Release)
+      - name: Upload release binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deldupes-linux-x86_64
+          path: target/release/deldupes
+          retention-days: 14

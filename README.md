@@ -52,7 +52,7 @@ If `deldupes` is unsure, it does nothing.
 
 ## Documentation
 
-- See **`docs/USAGE.md`** for a simple, step-by-step guide on how to use the tool.
+- See [**`docs/USAGE.md`**](docs/USAGE.md) for a simple, step-by-step guide on how to use the tool.
 - Developer-focused details live in separate design/spec documents.
 
 ---

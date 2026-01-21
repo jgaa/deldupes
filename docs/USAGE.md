@@ -210,6 +210,23 @@ At this point:
 
 This step is explicit and cannot happen by accident.
 
+```
+~/src/deldupes$ deldupes delete --apply testfile 
+GROUP b143bf935c061b9447a807808f86457843acc8f95b7ffc44b5781b008931eca4
+  KEEP (outside selection)
+  DELETE /home/jgaa/src/deldupes/testfile
+
+Deleted 1 files across 1 duplicate groups.
+
+~/src/deldupes$ deldupes check-hash b143bf935c061b9447a807808f86457843acc8f95b7ffc44b5781b008931eca4
+Blake256 b143bf935c061b9447a807808f86457843acc8f95b7ffc44b5781b008931eca4
+  RESULT FOUND_BY_HASH (2 db entry/entries)
+  DUPES (1 other live, 2 other total)
+    [Live] file_id=3204 size=39080 mtime=2026-01-20 15:32:06 path=/home/jgaa/src/deldupes/target/release/deps/libcpufeatures-bfff9646e382bf0d.rmeta
+    [Missing] file_id=3816 size=39080 mtime=2026-01-21 14:03:10 path=/home/jgaa/src/deldupes/testfile
+    
+```
+
 ---
 
 ## Re-running and updating

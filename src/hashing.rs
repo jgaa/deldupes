@@ -10,29 +10,30 @@ use std::path::Path;
 
 const MMAP_THRESHOLD: u64 = 32 * 1024 * 1024; // 32 MiB
 const READ_BUF_SIZE: usize = 1024 * 1024;     // 1 MiB
+const SHA1_READ_SIZE: usize = 32 * 1024;    // 32 KiB
 
 /// Hash a file and return its FileMeta.
 ///
 /// - hash256: full-file hash (currently BLAKE3-256)
-/// - sha1prefix_4k: SHA-1 of first 4096 bytes if size > 4096, else None
+/// - sha1prefix_32k: SHA-1 of first SHA1_READ_SIZE bytes if size > SHA1_READ_SIZE, else None
 ///
 /// `mtime_secs` and `size` are passed in from the caller (which already stat()'d the file).
 pub fn hash_file(path: &Path, mtime_secs: u64, size: u64) -> Result<FileMeta> {
-    let sha1prefix_4k = if size > 4096 {
-        Some(hash_prefix_sha1_4k(path)?)
+    let sha1prefix_32k = if size > SHA1_READ_SIZE as u64 {
+        Some(hash_prefix_sha1(path)?)
     } else {
         None
     };
 
     let hash256 = hash256_file_hybrid(path, CacheAdvice::SequentialNoReuseAndDrop)?;
-    Ok(FileMeta::new(size, mtime_secs, hash256, sha1prefix_4k))
+    Ok(FileMeta::new(size, mtime_secs, hash256, sha1prefix_32k))
 }
 
-fn hash_prefix_sha1_4k(path: &Path) -> Result<[u8; 20]> {
+fn hash_prefix_sha1(path: &Path) -> Result<[u8; 20]> {
     let f = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut r = BufReader::new(f);
 
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; SHA1_READ_SIZE];
     let n = r
         .read(&mut buf)
         .with_context(|| format!("read prefix {}", path.display()))?;

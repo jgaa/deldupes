@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::path_filter::PathFilter;
 use crate::file_meta::FileState;
 use crate::types::Hash256;
-
+use crate::util::format_size;
 
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -131,21 +131,3 @@ pub fn filter_groups(groups: Vec<PotentialGroup>, filter: &PathFilter) -> Vec<Po
     .collect()
 }
 
-
-// Simple human-readable size (binary units)
-fn format_size(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = 1024.0 * 1024.0;
-    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-
-    let b = bytes as f64;
-    if b >= GIB {
-        format!("{:.2} GiB", b / GIB)
-    } else if b >= MIB {
-        format!("{:.2} MiB", b / MIB)
-    } else if b >= KIB {
-        format!("{:.2} KiB", b / KIB)
-    } else {
-        format!("{} B", bytes)
-    }
-}

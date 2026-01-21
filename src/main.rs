@@ -19,6 +19,7 @@ mod dupe_groups;
 mod delete;
 mod check;
 mod types;
+mod util;
 
 #[derive(Parser, Debug)]
 #[command(name = "deldupes")]

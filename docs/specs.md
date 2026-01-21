@@ -96,8 +96,8 @@ Resolution rules remain as previously specified (name → default base dir; path
 
 ### Prefix hash (candidate filter)
 
-* Algorithm: **SHA-1** (first 4096 bytes)
-* Computed only if file size > 4096
+* Algorithm: **SHA-1** (first 32 bbytes)
+* Computed only if file size > 32k
 * Stored as raw 20 bytes
 * Used only for “potential duplicates” / informational grouping
 * Never used as a deletion criterion

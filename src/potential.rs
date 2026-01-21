@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::path_filter::PathFilter;
 use crate::file_meta::FileState;
 use crate::types::Hash256;
-use crate::util::format_size;
+use crate::util::{format_size, size_in_range};
 
 #[derive(Debug, Clone)]
 pub struct Entry {
@@ -118,16 +118,29 @@ pub fn print_groups(groups: &[PotentialGroup]) {
     }
 }
 
-/// Keep only groups where at least one entry path matches the filter.
-/// If filter is empty => everything matches.
-pub fn filter_groups(groups: Vec<PotentialGroup>, filter: &PathFilter) -> Vec<PotentialGroup> {
-    if filter.is_empty() {
-        return groups;
-    }
-
+pub fn filter_groups(
+    groups: Vec<PotentialGroup>,
+    filter: &PathFilter,
+    min_size: Option<u64>,
+    max_size: Option<u64>,
+) -> Vec<PotentialGroup> {
     groups
-    .into_iter()
-    .filter(|g| g.entries.iter().any(|e| filter.matches(&e.path)))
-    .collect()
+        .into_iter()
+        .filter_map(|mut g| {
+            // size filter first (entry-level)
+            g.entries.retain(|e| size_in_range(e.size, min_size, max_size));
+            if g.entries.len() < 2 {
+                return None;
+            }
+
+            // path filter (group-level)
+            if !filter.is_empty() && !g.entries.iter().any(|e| filter.matches(&e.path)) {
+                return None;
+            }
+
+            Some(g)
+        })
+        .collect()
 }
+
 

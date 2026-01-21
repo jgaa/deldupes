@@ -53,6 +53,7 @@ pub fn hash_full_hash256(path: &Path) -> Result<Hash256> {
 
 /// Controls how aggressively we ask the kernel to keep/drop cache.
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[allow(dead_code)]
 pub enum CacheAdvice {
     /// Just say "sequential". Lowest risk.
     SequentialOnly,

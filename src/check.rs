@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use crate::types::Hash256;
-
+use chrono::{DateTime, Local, TimeZone};
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum Status {
@@ -318,13 +318,19 @@ fn print_hash_peers(entries: &[crate::db::ShaEntry], exclude_file_id: Option<u64
     }
 }
 
-use chrono::{DateTime, Local, TimeZone};
-
 fn format_mtime(mtime_secs: u64) -> String {
     // Clamp invalid values defensively
     let secs = i64::try_from(mtime_secs).unwrap_or(0);
-    let dt: DateTime<Local> = Local.timestamp_opt(secs, 0)
+
+    let epoch = Local
+        .timestamp_opt(0, 0)
         .single()
-        .unwrap_or_else(|| Local.timestamp(0, 0));
+        .expect("Local epoch timestamp should be valid");
+
+    let dt: DateTime<Local> = Local
+        .timestamp_opt(secs, 0)
+        .single()
+        .unwrap_or(epoch);
+
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }

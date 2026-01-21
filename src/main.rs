@@ -69,12 +69,28 @@ enum Command {
     Dupes {
         /// Optional path prefixes to filter groups
         paths: Vec<PathBuf>,
+
+        /// Only show groups whose file size is >= this value (e.g. 10m, 1.3g)
+        #[arg(long, value_parser = util::parse_size)]
+        min_size: Option<u64>,
+
+        /// Only show groups whose file size is <= this value (e.g. 10m, 1.3g)
+        #[arg(long, value_parser = util::parse_size)]
+        max_size: Option<u64>,
     },
 
-    /// List potential duplicates (same SHA-1 of first 4 KiB, size > 4 KiB)
+    /// List potential duplicates (same SHA-1 of first 32 KiB)
     Potential {
         /// Optional path prefixes to filter groups
         paths: Vec<PathBuf>,
+
+        /// Only show entries with size >= this value (e.g. 10m, 1.3g)
+        #[arg(long, value_parser = util::parse_size)]
+        min_size: Option<u64>,
+
+        /// Only show entries with size <= this value (e.g. 10m, 1.3g)
+        #[arg(long, value_parser = util::parse_size)]
+        max_size: Option<u64>,
     },
 
     /// Safely delete duplicate files (dry-run by default)
@@ -174,28 +190,38 @@ fn run() -> Result<()> {
             Ok(())
         }
 
-        Command::Dupes { paths } => {
+        Command::Dupes { paths, min_size, max_size } => {
             let dbh = db::open(&db_dir)
-            .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
+                .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
+
+            if let (Some(min), Some(max)) = (min_size, max_size) {
+                if min > max {
+                    return Err(anyhow!("--min-size cannot be greater than --max-size"));
+                }
+            }
 
             let filter = path_filter::PathFilter::new(&paths);
-            dupes::run_dupes(&dbh, &filter)?;
+            dupes::run_dupes(&dbh, &filter, min_size, max_size)?;
             Ok(())
         }
 
-        
-        Command::Potential { paths } => {
+        Command::Potential { paths, min_size, max_size } => {
             let dbh = db::open(&db_dir)
-            .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
+                .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
 
+            if let (Some(min), Some(max)) = (min_size, max_size) {
+                if min > max {
+                    return Err(anyhow!("--min-size cannot be greater than --max-size"));
+                }
+            }
+                
             let groups = potential::load_groups(&dbh)?;
             let filter = path_filter::PathFilter::new(&paths);
-            let groups = potential::filter_groups(groups, &filter);
+            let groups = potential::filter_groups(groups, &filter, min_size, max_size);
 
             potential::print_groups(&groups);
             Ok(())
         }
-
         Command::Delete { paths, apply, preserve } => {
             let dbh = db::open(&db_dir)
             .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;

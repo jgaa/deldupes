@@ -59,7 +59,7 @@ pub fn compute(db: &DbHandle) -> Result<Stats> {
     } // tx + tables dropped here
 
     // 2) Duplicate stats: use shared dupe-group loader
-    let filter = PathFilter::new(&[]); // empty = match all
+    let filter = PathFilter::new(&[])?; // empty = match all
     let groups = dupe_groups::load_live_dupe_groups(db, &filter)?;
 
     out.dupe_groups = groups.len() as u64;

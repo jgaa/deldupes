@@ -68,7 +68,19 @@ This is the safest kind of duplicate detection.
 
 The tool will group files that are truly identical.
 
-(TBD: output format)
+```
+$ deldupes dupes 
+/home/jgaa/src/deldupes/.git/refs/heads/main 41 B
+  /home/jgaa/src/deldupes/.git/refs/remotes/origin/main
+
+/home/jgaa/src/deldupes/target/debug/.fingerprint/cc-b8f720ba5e04a3e0/dep-lib-cc 14 B
+  /home/jgaa/src/deldupes/target/debug/.fingerprint/anstream-bfd75e7734cadc61/dep-lib-anstream
+  /home/jgaa/src/deldupes/target/debug/.fingerprint/anstream-ffea2a363b0bb80f/dep-lib-anstream
+  /home/jgaa/src/deldupes/target/debug/.fingerprint/anstyle-537e268ddd072f96/dep-lib-anstyle
+  /home/jgaa/src/deldupes/target/debug/.fingerprint/anstyle-6ad6bd57f685c391/dep-lib-anstyle
+  /home/jgaa/src/deldupes/target/debug/.fingerprint/anstyle-parse-176f939ae08ae3a9/dep-lib-anstyle_parse
+  ...
+```
 
 ---
 
@@ -82,7 +94,15 @@ These are shown for **manual inspection only**.
 
 No delete command operates on potential duplicates.
 
-(TBD: output format)
+```
+$ deldupes potential
+/home/jgaa/src/deldupes/target/release/deps/libcpufeatures-bfff9646e382bf0d.rmeta (38.16 KiB)
+  /home/jgaa/src/deldupes/target/debug/deps/libcpufeatures-1e9487f934a4fc66.rmeta (38.16 KiB)
+  /home/jgaa/src/deldupes/target/debug/deps/libcpufeatures-6c9ff56478c3457e.rmeta (38.16 KiB)
+
+```
+*note* The files listed happens to have the same size, but they are not equal. The hash of the complete files differs.
+
 
 ---
 
@@ -99,8 +119,26 @@ This does **not** modify the database.
 
 This is useful if you are unsure about a single file.
 
-(TBD: output format)
+```
+jgaa@combat:~/src/deldupes$ deldupes check Cargo.toml
+PATH /home/jgaa/src/deldupes/Cargo.toml
+  DISK size=916 mtime=2026-01-21 13:50:31
+  DB   found current: file_id=3 state=Live size=916 mtime=2026-01-21 13:50:31
+  RESULT SAME (matched by path + (size,mtime))
+  Blake256 67b605764ea7f0fb4d2872fd50b69a6eae29b9133f2ee5ba91e175d24e48e428
+  UNIQUE (no other DB entries with this hash)
 
+$ cp target/release/deps/libcpufeatures-bfff9646e382bf0d.rmeta testfile
+
+$ deldupes check testfile 
+PATH /home/jgaa/src/deldupes/testfile
+  DISK size=39080 mtime=2026-01-21 14:03:10
+  DB   no current entry for this path -> hashing
+  Blake256 b143bf935c061b9447a807808f86457843acc8f95b7ffc44b5781b008931eca4
+  RESULT FOUND_BY_HASH (1 db entry/entries)
+  DUPES (1 other live, 1 other total)
+    [Live] file_id=3204 size=39080 mtime=2026-01-20 15:32:06 path=/home/jgaa/src/deldupes/target/release/deps/libcpufeatures-bfff9646e382bf0d.rmeta
+```
 ---
 
 ## Checking by hash
@@ -111,7 +149,17 @@ This is useful when:
 - the file is not currently available
 - you want to compare against backups or other systems
 
-(TBD: output format)
+```
+b3sum testfile 
+b143bf935c061b9447a807808f86457843acc8f95b7ffc44b5781b008931eca4  testfile
+
+$ deldupes check-hash b143bf935c061b9447a807808f86457843acc8f95b7ffc44b5781b008931eca4
+Blake256 b143bf935c061b9447a807808f86457843acc8f95b7ffc44b5781b008931eca4
+  RESULT FOUND_BY_HASH (1 db entry/entries)
+  DUPES (1 other live, 1 other total)
+    [Live] file_id=3204 size=39080 mtime=2026-01-20 15:32:06 path=/home/jgaa/src/deldupes/target/release/deps/libcpufeatures-bfff9646e382bf0d.rmeta
+
+```
 
 ---
 
@@ -130,8 +178,26 @@ This allows workflows like:
 - “delete duplicates only from Downloads”
 - “keep one copy outside this folder”
 
-(TBD: delete planning output)
+```
+~/src/deldupes$ deldupes scan .
 
+~/src/deldupes$ deldupes delete testfile
+GROUP b143bf935c061b9447a807808f86457843acc8f95b7ffc44b5781b008931eca4
+  KEEP (outside selection)
+  WOULD_DELETE /home/jgaa/src/deldupes/testfile
+
+~/src/deldupes$ deldupes delete ./target/debug
+GROUP ba289eb78532dac352ddce3370336b3ad49c29a1f21bfe36e0cabe28b53b5a1d
+  KEEP (outside selection)
+  WOULD_DELETE /home/jgaa/src/deldupes/target/debug/.fingerprint/anstream-bfd75e7734cadc61/dep-lib-anstream
+  WOULD_DELETE /home/jgaa/src/deldupes/target/debug/.fingerprint/anstream-ffea2a363b0bb80f/dep-lib-anstream
+  WOULD_DELETE /home/jgaa/src/deldupes/target/debug/.fingerprint/anstyle-537e268ddd072f96/dep-lib-anstyle
+  WOULD_DELETE /home/jgaa/src/deldupes/target/debug/.fingerprint/anstyle-6ad6bd57f685c391/dep-lib-anstyle
+  WOULD_DELETE /home/jgaa/src/deldupes/target/debug/.fingerprint/anstyle-parse-176f939ae08ae3a9/dep-lib-anstyle_parse
+  WOULD_DELETE /home/jgaa/src/deldupes/target/debug/.fingerprint/anstyle-parse-273eec7b356849c1/dep-lib-anstyle_parse
+  WOULD_DELETE /home/jgaa/src/deldupes/target/debug/.fingerprint/anstyle-query-a13c83da0691fb53/dep-lib-anstyle_query
+  WOULD_DELETE /home/jgaa/src/deldupes/target/debug/.fingerprint/anstyle-query-d35beb6ca0618fe2/dep-lib-anstyle_query
+```
 ---
 
 ## Applying deletions

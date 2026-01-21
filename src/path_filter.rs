@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use crate::path_utils;
+use anyhow::{Context, Result};
 
 #[derive(Debug, Clone)]
 pub struct PathFilter {
@@ -7,13 +9,25 @@ pub struct PathFilter {
 
 impl PathFilter {
     /// If `paths` is empty => matches everything.
-    pub fn new(paths: &[PathBuf]) -> Self {
-        let mut prefixes: Vec<String> = paths.iter().map(|p| normalize_prefix(p)).collect();
+    pub fn new(paths: &[PathBuf]) -> Result<Self> {
+        let mut prefixes = Vec::new();
 
-        // Sort longer prefixes first (more specific first)
+        for p in paths {
+            let norm = path_utils::normalize_path(p)
+                .with_context(|| format!("Failed to normalize filter path: {}", p.display()))?;
+
+            let mut s = norm.to_string_lossy().to_string();
+            if s.ends_with('/') {
+                s.pop();
+            }
+
+            prefixes.push(s);
+        }
+
+        // longest first, same as before
         prefixes.sort_by(|a, b| b.len().cmp(&a.len()));
 
-        Self { prefixes }
+        Ok(Self { prefixes })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -32,14 +46,6 @@ impl PathFilter {
     }
 }
 
-fn normalize_prefix(p: &Path) -> String {
-    let mut s = p.to_string_lossy().to_string();
-    // strip trailing separators (except if it's just "/" or "C:\")
-    while s.len() > 1 && (s.ends_with('/') || s.ends_with('\\')) {
-        s.pop();
-    }
-    s
-}
 
 /// "/home/a" matches "/home/a/file" but not "/home/ab/file".
 fn starts_with_path_prefix(path: &str, prefix: &str) -> bool {

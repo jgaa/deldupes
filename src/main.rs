@@ -200,7 +200,7 @@ fn run() -> Result<()> {
                 }
             }
 
-            let filter = path_filter::PathFilter::new(&paths);
+            let filter = path_filter::PathFilter::new(&paths)?;
             dupes::run_dupes(&dbh, &filter, min_size, max_size)?;
             Ok(())
         }
@@ -216,7 +216,7 @@ fn run() -> Result<()> {
             }
                 
             let groups = potential::load_groups(&dbh)?;
-            let filter = path_filter::PathFilter::new(&paths);
+            let filter = path_filter::PathFilter::new(&paths)?;
             let groups = potential::filter_groups(groups, &filter, min_size, max_size);
 
             potential::print_groups(&groups);
@@ -226,7 +226,7 @@ fn run() -> Result<()> {
             let dbh = db::open(&db_dir)
             .with_context(|| format!("Failed to open database in {}", db_dir.display()))?;
 
-            let filter = path_filter::PathFilter::new(&paths);
+            let filter = path_filter::PathFilter::new(&paths)?;
             delete::run_delete(&dbh, &filter, preserve, apply)?;
             Ok(())
         }

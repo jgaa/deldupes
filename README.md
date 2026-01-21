@@ -47,8 +47,8 @@ If `deldupes` is unsure, it does nothing.
 
 - **Linux only**
 - Command-line tool
-- Actively developed
-- Not yet released (expect changes)
+- In maintainance mode. New useful feature ideas and bug-fixes will be added.
+- Beta release
 
 ---
 

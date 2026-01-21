@@ -120,7 +120,7 @@ This does **not** modify the database.
 This is useful if you are unsure about a single file.
 
 ```
-jgaa@combat:~/src/deldupes$ deldupes check Cargo.toml
+~/src/deldupes$ deldupes check Cargo.toml
 PATH /home/jgaa/src/deldupes/Cargo.toml
   DISK size=916 mtime=2026-01-21 13:50:31
   DB   found current: file_id=3 state=Live size=916 mtime=2026-01-21 13:50:31
@@ -224,7 +224,7 @@ Blake256 b143bf935c061b9447a807808f86457843acc8f95b7ffc44b5781b008931eca4
   DUPES (1 other live, 2 other total)
     [Live] file_id=3204 size=39080 mtime=2026-01-20 15:32:06 path=/home/jgaa/src/deldupes/target/release/deps/libcpufeatures-bfff9646e382bf0d.rmeta
     [Missing] file_id=3816 size=39080 mtime=2026-01-21 14:03:10 path=/home/jgaa/src/deldupes/testfile
-    
+
 ```
 
 ---
